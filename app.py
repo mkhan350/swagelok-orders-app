@@ -129,6 +129,108 @@ def test_api_connection():
     except Exception as e:
         st.error(f"API Error: {str(e)}")
         return False
+def fetch_swagelok_orders(selected_status):
+    """Fetch orders from Swagelok portal using Selenium"""
+    
+    # Setup Chrome options for cloud deployment
+    options = Options()
+    options.add_argument('--headless=new')
+    options.add_argument('--no-sandbox')
+    options.add_argument('--disable-dev-shm-usage')
+    options.add_argument('--disable-gpu')
+    options.add_argument('--disable-extensions')
+    options.add_argument('--window-size=1920,1080')
+    
+    driver = None
+    
+    try:
+        # Initialize WebDriver
+        driver = webdriver.Chrome(options=options)
+        wait = WebDriverWait(driver, 15)
+        
+        # Navigate to Swagelok login
+        driver.get("https://supplierportal.swagelok.com//login.aspx")
+        
+        # Login
+        username_field = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_txtUsername")))
+        password_field = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_txtPassword")))
+        go_button = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_btnGo2")))
 
+        username_field.send_keys("mstkhan")
+        password_field.send_keys("Concept350!")
+        go_button.click()
+
+        # Handle terms page if it appears
+        try:
+            accept_terms_button = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_lnkAcceptTerms")))
+            accept_terms_button.click()
+        except:
+            pass  # Terms page might not appear
+
+        # Navigate to orders
+        order_application_link = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_rptPortalApplications_ctl01_lnkPortalApplication")))
+        order_application_link.click()
+        driver.switch_to.window(driver.window_handles[-1])
+
+        # Setup filters
+        checkbox = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_chkOrdersRequiringAction")))
+        checkbox.click()
+
+        dropdown = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_cboRequestStatus")))
+        for option in dropdown.find_elements(By.TAG_NAME, "option"):
+            if option.text == selected_status:
+                option.click()
+                break
+
+        search_button = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_btnSearch")))
+        search_button.click()
+
+        # Extract order data
+        data = []
+        row_index = 1
+        max_iterations = 100  # Limit for cloud deployment
+        
+        while row_index <= max_iterations:
+            try:
+                order_details_id = f"ctl00_MainContentPlaceHolder_rptResults_ctl{row_index:02d}_trDetails"
+                order_details_element = wait.until(EC.presence_of_element_located((By.ID, order_details_id)))
+                
+                order_details_text = order_details_element.text
+                details = order_details_text.split()
+                
+                if selected_status in ["Order - New, Requires Supplier Action", "Order - History"]:
+                    if len(details) >= 8:
+                        order_number = details[0]
+                        order_date = details[4]
+                        part_number = details[5]
+                        quantity = details[6]
+                        delivery_date = details[7]
+                        data.append([order_number, order_date, part_number, quantity, delivery_date])
+                else:
+                    if len(details) >= 10:
+                        order_number = details[0]
+                        order_date = details[7]
+                        part_number = details[8]
+                        quantity = details[9]
+                        data.append([order_number, order_date, part_number, quantity])
+
+                row_index += 1
+                
+            except:
+                break  # No more rows found
+
+        # Return headers and data
+        if selected_status in ["Order - New, Requires Supplier Action", "Order - History"]:
+            return ["Order Number", "Order Date", "Part Number", "Quantity", "Delivery Date"], data
+        else:
+            return ["Order Number", "Order Date", "Part Number", "Quantity"], data
+
+    except Exception as e:
+        st.error(f"Scraping error: {str(e)}")
+        return [], []
+        
+    finally:
+        if driver:
+            driver.quit()
 if __name__ == "__main__":
     main()
