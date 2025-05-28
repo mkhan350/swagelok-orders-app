@@ -70,24 +70,44 @@ def main():
                 ]
             )
             
-            # Fetch orders button
+            # Fetch orders button - FIXED VERSION
             if st.button("🔄 Fetch Orders", type="primary"):
                 with st.spinner("Fetching orders from Swagelok portal..."):
                     try:
                         headers, data = fetch_swagelok_orders(order_status)
                         if data:
+                            # Store the data properly
                             st.session_state.orders_data = pd.DataFrame(data, columns=headers)
                             st.success(f"✅ Fetched {len(data)} orders successfully!")
-                            st.rerun()
+                            
+                            # Debug info
+                            st.write("**Debug Info:**")
+                            st.write(f"Headers: {headers}")
+                            st.write(f"Data sample: {data[:2] if len(data) > 0 else 'No data'}")
+                            
+                            # Don't use st.rerun() - let it naturally refresh
                         else:
                             st.error("❌ No orders found or connection failed")
                     except Exception as e:
                         st.error(f"❌ Error fetching orders: {str(e)}")
         
-        # Main content area
+        # Main content area - ENHANCED VERSION
         if st.session_state.orders_data is not None:
             st.header("📋 Open Orders")
+            st.write(f"**Found {len(st.session_state.orders_data)} orders:**")
             st.dataframe(st.session_state.orders_data, use_container_width=True)
+            
+            # Add action buttons for each order
+            st.subheader("🔧 Actions")
+            for idx, row in st.session_state.orders_data.iterrows():
+                col1, col2, col3 = st.columns([3, 2, 1])
+                with col1:
+                    st.write(f"**Order:** {row.iloc[0]} | **Part:** {row.iloc[2]}")
+                with col2:
+                    st.write(f"**Qty:** {row.iloc[3]}")
+                with col3:
+                    if st.button(f"Create SO", key=f"create_so_{idx}"):
+                        st.info("SO creation functionality coming next!")
         else:
             # Welcome screen
             col1, col2, col3 = st.columns(3)
