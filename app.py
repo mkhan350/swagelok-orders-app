@@ -1,12 +1,9 @@
 import streamlit as st
 import pandas as pd
 import requests
-import threading
 from datetime import datetime, timedelta
 import time
-import os
 
-API_TOKEN = st.secrets["FULCRUM_API_TOKEN"]
 # Page setup
 st.set_page_config(
     page_title="Swagelok Orders Manager", 
@@ -14,7 +11,17 @@ st.set_page_config(
     layout="wide"
 )
 
-# Simple authentication
+# Your API configurations
+API_TOKEN = st.secrets["FULCRUM_API_TOKEN"]
+BASE_URL = "https://api.fulcrumpro.us/api"
+
+# Initialize session state
+if 'orders_data' not in st.session_state:
+    st.session_state.orders_data = None
+if 'created_sos' not in st.session_state:
+    st.session_state.created_sos = {}
+
+# Authentication
 def check_password():
     def password_entered():
         if st.session_state["password"] == "swagelok2025":
@@ -40,11 +47,69 @@ def main():
     
     if check_password():
         st.success("✅ Access granted!")
-        st.write("Welcome to the Swagelok Orders Manager")
         
-        # Test button
-        if st.button("Test Connection"):
-            st.info("Connection test successful! Ready for next steps.")
+        # Sidebar for controls
+        with st.sidebar:
+            st.header("⚙️ Controls")
+            
+            # Order status selection
+            order_status = st.selectbox(
+                "Order Status:",
+                [
+                    "Order - New, Requires Supplier Action",
+                    "Order - Modification, Requires Supplier Action",
+                    "Ack - Sent", 
+                    "Ack - Accepted",
+                    "Order - History"
+                ]
+            )
+            
+            # Fetch orders button
+            if st.button("🔄 Fetch Orders", type="primary"):
+                with st.spinner("Fetching orders from Swagelok portal..."):
+                    st.info("🚧 Order fetching functionality will be added next!")
+                    # This is where we'll add the Selenium scraping
+        
+        # Main content area
+        if st.session_state.orders_data is not None:
+            st.header("📋 Open Orders")
+            st.dataframe(st.session_state.orders_data, use_container_width=True)
+        else:
+            # Welcome screen
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.metric("Total Orders", "0")
+            with col2:
+                st.metric("SOs Created", len(st.session_state.created_sos))
+            with col3:
+                st.metric("API Status", "🟢 Online")
+            
+            st.info("👆 Use the sidebar to fetch orders and get started!")
+            
+            # Test API connection
+            if st.button("Test API Connection"):
+                with st.spinner("Testing API connection..."):
+                    success = test_api_connection()
+                    if success:
+                        st.success("✅ API connection successful!")
+                    else:
+                        st.error("❌ API connection failed")
+
+def test_api_connection():
+    """Test connection to Fulcrum API"""
+    try:
+        headers = {
+            "Authorization": f"Bearer {API_TOKEN}",
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        }
+        
+        # Simple API test
+        response = requests.get(f"{BASE_URL}/items/list/v2", headers=headers, timeout=10)
+        return response.status_code == 200
+    except:
+        return False
 
 if __name__ == "__main__":
     main()
