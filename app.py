@@ -3,7 +3,11 @@ import pandas as pd
 import requests
 from datetime import datetime, timedelta
 import time
-
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.chrome.options import Options
 # Page setup
 st.set_page_config(
     page_title="Swagelok Orders Manager", 
@@ -65,10 +69,19 @@ def main():
             )
             
             # Fetch orders button
+            # Fetch orders button
             if st.button("🔄 Fetch Orders", type="primary"):
                 with st.spinner("Fetching orders from Swagelok portal..."):
-                    st.info("🚧 Order fetching functionality will be added next!")
-                    # This is where we'll add the Selenium scraping
+                    try:
+                        headers, data = fetch_swagelok_orders(order_status)
+                        if data:
+                            st.session_state.orders_data = pd.DataFrame(data, columns=headers)
+                            st.success(f"✅ Fetched {len(data)} orders successfully!")
+                            st.experimental_rerun()
+                        else:
+                            st.error("❌ No orders found or connection failed")
+                    except Exception as e:
+                        st.error(f"❌ Error fetching orders: {str(e)}")
         
         # Main content area
         if st.session_state.orders_data is not None:
