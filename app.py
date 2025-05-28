@@ -9,6 +9,7 @@ import win32com.client as win32
 import pythoncom
 from pathlib import Path
 
+API_TOKEN = st.secrets["FULCRUM_API_TOKEN"]
 # Page setup
 st.set_page_config(
     page_title="Swagelok Orders Manager", 
