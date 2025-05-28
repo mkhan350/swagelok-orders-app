@@ -5,9 +5,6 @@ import threading
 from datetime import datetime, timedelta
 import time
 import os
-import win32com.client as win32
-import pythoncom
-from pathlib import Path
 
 API_TOKEN = st.secrets["FULCRUM_API_TOKEN"]
 # Page setup
