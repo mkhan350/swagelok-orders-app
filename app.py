@@ -16,9 +16,6 @@ st.set_page_config(
     layout="wide"
 )
 
-# Your API token
-API_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJOYW1lIjoiUHl0aG9uIFRlc3QiLCJSZXZvY2F0aW9uSWQiOiI4ODMxMmIwMy0xODRmLTRiOGMtYmZhYS0wNzRlNTA5M2IxNTUiLCJleHAiOjE3OTg3Nzk2MDAsImlzcyI6ImNvbmNlcHRncm91cGxsYy5mdWxjcnVtcHJvLmNvbSIsImF1ZCI6ImNvbmNlcHRncm91cGxsYyJ9.HlMhknZhz7gizF7kzb6klNIEANZ_BCTnVdcarjEK6B4"
-
 # Simple authentication
 def check_password():
     def password_entered():
