@@ -105,10 +105,16 @@ def test_api_connection():
             "Accept": "application/json"
         }
         
-        # Simple API test
-        response = requests.get(f"{BASE_URL}/items/list/v2", headers=headers, timeout=10)
-        return response.status_code == 200
-    except:
+        # Test with a proper API call format
+        payload = {
+            "numbers": [{"query": "TEST", "mode": "equal"}],
+            "latestRevision": True
+        }
+        
+        response = requests.post(f"{BASE_URL}/items/list/v2", json=payload, headers=headers, timeout=10)
+        return response.status_code in [200, 201]
+    except Exception as e:
+        st.error(f"API Error: {str(e)}")
         return False
 
 if __name__ == "__main__":
