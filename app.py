@@ -8,6 +8,8 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+
 # Page setup
 st.set_page_config(
     page_title="Swagelok Orders Manager", 
@@ -69,7 +71,6 @@ def main():
             )
             
             # Fetch orders button
-            # Fetch orders button
             if st.button("🔄 Fetch Orders", type="primary"):
                 with st.spinner("Fetching orders from Swagelok portal..."):
                     try:
@@ -77,7 +78,7 @@ def main():
                         if data:
                             st.session_state.orders_data = pd.DataFrame(data, columns=headers)
                             st.success(f"✅ Fetched {len(data)} orders successfully!")
-                            st.experimental_rerun()
+                            st.rerun()
                         else:
                             st.error("❌ No orders found or connection failed")
                     except Exception as e:
@@ -129,6 +130,7 @@ def test_api_connection():
     except Exception as e:
         st.error(f"API Error: {str(e)}")
         return False
+
 def fetch_swagelok_orders(selected_status):
     """Fetch orders from Swagelok portal using Selenium"""
     
@@ -140,12 +142,16 @@ def fetch_swagelok_orders(selected_status):
     options.add_argument('--disable-gpu')
     options.add_argument('--disable-extensions')
     options.add_argument('--window-size=1920,1080')
+    options.add_argument('--disable-blink-features=AutomationControlled')
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option('useAutomationExtension', False)
     
     driver = None
     
     try:
-        # Initialize WebDriver
-        driver = webdriver.Chrome(options=options)
+        # Initialize WebDriver with system chromedriver
+        service = Service('/usr/bin/chromedriver')
+        driver = webdriver.Chrome(service=service, options=options)
         wait = WebDriverWait(driver, 15)
         
         # Navigate to Swagelok login
@@ -232,5 +238,6 @@ def fetch_swagelok_orders(selected_status):
     finally:
         if driver:
             driver.quit()
+
 if __name__ == "__main__":
     main()
