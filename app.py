@@ -408,24 +408,41 @@ def view_users_form():
 
 # Authentication
 def login_form():
-    """Login form with database authentication"""
-    st.title("🏭 Swagelok Orders Manager")
-    st.subheader("🔐 Login")
+    """Centered login form like professional websites"""
+    st.markdown("<h1 style='text-align: center;'>FV - Open Orders</h1>", unsafe_allow_html=True)
     
-    with st.form("login_form"):
-        username = st.text_input("Username")
-        password = st.text_input("Password", type="password")
-        submitted = st.form_submit_button("Login")
+    # Create centered columns
+    col1, col2, col3 = st.columns([1, 2, 1])
+    
+    with col2:
+        st.markdown("<h3 style='text-align: center; margin-bottom: 2rem;'>🔐 Login</h3>", unsafe_allow_html=True)
         
-        if submitted:
-            user_db = get_user_db()
-            success, result = user_db.authenticate_user(username, password)
+        with st.form("login_form"):
+            username = st.text_input("Username", placeholder="Enter your username")
+            password = st.text_input("Password", type="password", placeholder="Enter your password")
             
-            if success:
-                st.session_state.current_user = result
-                st.experimental_rerun()
-            else:
-                st.error(f"❌ {result}")
+            # Center the login button
+            col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 1])
+            with col_btn2:
+                submitted = st.form_submit_button("Login", use_container_width=True)
+            
+            if submitted:
+                user_db = get_user_db()
+                success, result = user_db.authenticate_user(username, password)
+                
+                if success:
+                    # Clear all session state for fresh login
+                    for key in list(st.session_state.keys()):
+                        if key not in ['current_user']:
+                            del st.session_state[key]
+                    
+                    st.session_state.current_user = result
+                    st.session_state.orders_data = None
+                    st.session_state.created_sos = {}
+                    st.session_state.updated_delivery_dates = {}
+                    st.experimental_rerun()
+                else:
+                    st.error(f"❌ {result}")
 
 def logout():
     """Logout function"""
@@ -517,28 +534,29 @@ def main():
         login_form()
         return
     
-    # Get current user info from session (already contains user data from database)
+    # Get current user info from session
     current_user = st.session_state.current_user
     
-    # Header with user info and buttons
-    header_col1, header_col2, header_col3, header_col4 = st.columns([2, 1, 1, 1])
+    # Header with title and account menu
+    header_col1, header_col2 = st.columns([3, 1])
     
     with header_col1:
-        st.title("🏭 Swagelok Orders Manager")
+        st.title("FV - Open Orders")
     
     with header_col2:
-        if current_user['is_admin']:
-            if st.button("👤 Create Users"):
-                st.session_state.show_create_user = True
-    
-    with header_col3:
-        if current_user['is_admin']:
-            if st.button("👥 View Users"):
-                st.session_state.show_view_users = True
-    
-    with header_col4:
-        if st.button("🚪 Logout"):
-            logout()
+        # Account dropdown menu
+        with st.expander("Account"):
+            if current_user['is_admin']:
+                if st.button("👤 Create Users", use_container_width=True):
+                    st.session_state.show_create_user = True
+                if st.button("👥 View Users", use_container_width=True):
+                    st.session_state.show_view_users = True
+            
+            if st.button("🔒 Change Password", use_container_width=True):
+                st.session_state.show_change_password = True
+            
+            if st.button("🚪 Logout", use_container_width=True):
+                logout()
     
     # Show user management forms if requested
     if st.session_state.get('show_create_user', False):
@@ -555,9 +573,16 @@ def main():
             st.experimental_rerun()
         return
     
-    # Sidebar for controls
+    if st.session_state.get('show_change_password', False):
+        change_password_form()
+        if st.button("← Back to Orders"):
+            st.session_state.show_change_password = False
+            st.experimental_rerun()
+        return
+    
+    # Sidebar for controls only
     with st.sidebar:
-        st.header("⚙️ Controls")
+        st.header("Controls")
         
         # Order status selection
         order_status = st.selectbox(
@@ -572,7 +597,7 @@ def main():
         )
         
         # Fetch orders button
-        if st.button("🔄 Fetch Orders", type="primary"):
+        if st.button("Fetch Orders", type="primary"):
             with st.spinner("Fetching orders from Swagelok portal..."):
                 try:
                     headers, data = fetch_swagelok_orders(order_status)
@@ -584,20 +609,6 @@ def main():
                 except Exception as e:
                     st.error(f"❌ Error fetching orders: {str(e)}")
         
-        # App info
-        st.header("📊 App Info")
-        if st.session_state.orders_data is not None:
-            st.metric("Total Orders", len(st.session_state.orders_data))
-        else:
-            st.metric("Total Orders", "0")
-        st.metric("SOs Created", len(st.session_state.created_sos))
-        
-        # Get user count from database
-        user_db = get_user_db()
-        user_count = len(user_db.get_all_users())
-        st.metric("Total Users", user_count)
-        st.metric("API Status", "🟢 Online")
-        
         # Test API connection
         if st.button("Test API Connection"):
             with st.spinner("Testing API connection..."):
@@ -606,118 +617,106 @@ def main():
                     st.success("✅ API connection successful!")
                 else:
                     st.error("❌ API connection failed")
-        
-        # Change password button
-        st.header("🔧 Account")
-        if st.button("🔒 Change Password"):
-            st.session_state.show_change_password = True
-    
-    # Show change password form if requested
-    if st.session_state.get('show_change_password', False):
-        change_password_form()
-        if st.button("← Back to Orders"):
-            st.session_state.show_change_password = False
-            st.experimental_rerun()
-        return
     
     # Main content area
     if st.session_state.orders_data is not None:
-        # Orders fetched - show orders table
-        st.header("📋 Open Orders")
+        # Orders fetched - show orders table with inline actions
+        st.header("Open Orders")
         st.write(f"**Found {len(st.session_state.orders_data)} orders:**")
         
-        # Create enhanced table with action column
-        df_display = st.session_state.orders_data.copy()
-        df_display.insert(0, 'No.', range(1, len(df_display) + 1))
-        
-        # Display table
-        st.dataframe(df_display, use_container_width=True)
-        
-        # Actions section with enhanced controls
-        st.subheader("🔧 Actions")
-        
+        # Create table with inline action buttons
         for idx, row in st.session_state.orders_data.iterrows():
-            col1, col2, col3, col4, col5 = st.columns([0.5, 2.5, 1.5, 1.5, 1])
+            # Create columns for each row
+            col1, col2, col3, col4, col5, col6, col7 = st.columns([0.5, 1.5, 1.5, 2, 1, 1.5, 1.5])
             
             with col1:
                 st.write(f"**{idx + 1}.**")
             
             with col2:
-                st.write(f"**Order:** {row.iloc[0]}")
-                st.write(f"**Part:** {row.iloc[2]}")
+                st.write(f"**{row.iloc[0]}**")  # Order Number
+                st.caption("Order #")
             
             with col3:
-                st.write(f"**Qty:** {row.iloc[3]}")
-                # Add price input for manual override
-                price_key = f"price_{idx}"
-                if price_key not in st.session_state:
-                    st.session_state[price_key] = 100.0
-                st.session_state[price_key] = st.number_input(
-                    "Price ($)", 
-                    min_value=0.01, 
-                    value=st.session_state[price_key],
-                    key=f"price_input_{idx}",
-                    step=0.01
-                )
+                st.write(f"{row.iloc[1]}")  # Order Date
+                st.caption("Date")
             
             with col4:
-                # Delivery date picker
-                if len(row) > 4:
-                    default_date = datetime.strptime(row.iloc[4], "%m/%d/%Y").date()
-                else:
-                    default_date = business_days_from(datetime.now(), 18).date()
-                
-                delivery_date = st.date_input(
-                    "Delivery Date",
-                    value=default_date,
-                    key=f"delivery_{idx}"
-                )
+                st.write(f"**{row.iloc[2]}**")  # Part Number
+                st.caption("Part Number")
             
             with col5:
+                st.write(f"{row.iloc[3]}")  # Quantity
+                st.caption("Qty")
+            
+            with col6:
+                if len(row) > 4:
+                    # Delivery date picker for orders that have delivery date
+                    default_date = datetime.strptime(row.iloc[4], "%m/%d/%Y").date()
+                    delivery_date = st.date_input(
+                        "Delivery",
+                        value=default_date,
+                        key=f"delivery_{idx}",
+                        label_visibility="collapsed"
+                    )
+                    st.caption("Delivery Date")
+                else:
+                    # Default delivery date for orders without it
+                    default_date = business_days_from(datetime.now(), 18).date()
+                    delivery_date = st.date_input(
+                        "Delivery",
+                        value=default_date,
+                        key=f"delivery_{idx}",
+                        label_visibility="collapsed"
+                    )
+                    st.caption("Delivery Date")
+            
+            with col7:
                 order_number = row.iloc[0]
                 
                 if order_number in st.session_state.created_sos:
-                    st.success(f"✅ SO: {st.session_state.created_sos[order_number]}")
+                    st.success(f"SO: {st.session_state.created_sos[order_number]}")
                 else:
-                    if st.button(f"Create SO", key=f"create_so_{idx}"):
-                        with st.spinner(f"Creating SO for Order {order_number}..."):
-                            # Convert row to list and add price
-                            order_data = row.tolist()
-                            manual_price = st.session_state[price_key]
-                            
-                            # Create sales order
-                            so_number = create_sales_order(order_data, delivery_date.strftime("%Y-%m-%d"))
-                            if so_number:
-                                st.session_state.created_sos[order_number] = so_number
-                                st.experimental_rerun()
+                    # Action dropdown
+                    action = st.selectbox(
+                        "Action",
+                        ["Select Action", "Create SO"],
+                        key=f"action_{idx}",
+                        label_visibility="collapsed"
+                    )
+                    
+                    if action == "Create SO":
+                        if st.button(f"Execute", key=f"execute_{idx}"):
+                            with st.spinner(f"Creating SO for Order {order_number}..."):
+                                # Get price - default to 100.0 for now
+                                manual_price = 100.0
+                                
+                                # Convert row to list
+                                order_data = row.tolist()
+                                
+                                # Create sales order
+                                so_number = create_sales_order(order_data, delivery_date.strftime("%Y-%m-%d"))
+                                if so_number:
+                                    st.session_state.created_sos[order_number] = so_number
+                                    st.experimental_rerun()
+            
+            # Add separator line
+            st.markdown("---")
     
     else:
         # Welcome screen
         st.markdown(f"# WELCOME **{current_user['first_name'].upper()}**")
         st.markdown("---")
         
-        # Instructions
-        col1, col2 = st.columns([2, 1])
-        
-        with col1:
-            st.info("👆 Use the sidebar to fetch orders and get started!")
-            st.markdown("""
-            ### How to use:
-            1. **Select Order Status** from the dropdown in the sidebar
-            2. **Click 'Fetch Orders'** to retrieve orders from Swagelok portal
-            3. **Review orders** in the main table
-            4. **Adjust prices and delivery dates** as needed
-            5. **Click 'Create SO'** to create sales orders
-            """)
-        
-        with col2:
-            st.markdown("### Quick Stats")
-            st.metric("Your Role", "Admin" if current_user['is_admin'] else "User")
-            
-            # Get user count from database
-            user_db = get_user_db()
-            user_count = len(user_db.get_all_users())
-            st.metric("Active Users", user_count)
+        # Instructions only
+        st.info("👆 Use the sidebar to fetch orders and get started!")
+        st.markdown("""
+        ### How to use:
+        1. **Select Order Status** from the dropdown in the sidebar
+        2. **Click 'Fetch Orders'** to retrieve orders from Swagelok portal
+        3. **Review orders** in the main table
+        4. **Adjust delivery dates** as needed
+        5. **Select 'Create SO'** from action dropdown and click Execute
+        """)
 
 def test_api_connection():
     """Test connection to Fulcrum API"""
