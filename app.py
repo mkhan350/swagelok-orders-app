@@ -1093,6 +1093,7 @@ def main():
         # Orders fetched - show orders table with proper headers
         st.header("Open Orders")
         st.write(f"**Found {len(st.session_state.orders_data)} orders:**")
+        st.info("💡 **Tip:** All delivery dates are editable - adjust them as needed before creating Sales Orders!")
         
         # Get column names from the DataFrame
         columns = st.session_state.orders_data.columns.tolist()
@@ -1100,10 +1101,10 @@ def main():
         # Create proper table headers based on the order status
         if len(columns) == 6:  # Has Sales Order column (Order History and Order Modification)
             header_cols = st.columns([0.5, 1.2, 1.2, 2, 1, 1.2, 1.2, 1.5])
-            headers = ["No.", "Order #", "Date", "Part Number", "Qty", "Sales Order", "Delivery", "Action"]
+            headers = ["No.", "Order #", "Date", "Part Number", "Qty", "Sales Order", "Delivery ✏️", "Action"]
         else:  # No Sales Order column (Order New and others)
             header_cols = st.columns([0.5, 1.2, 1.2, 2, 1, 1.5, 1.5])
-            headers = ["No.", "Order #", "Date", "Part Number", "Qty", "Delivery", "Action"]
+            headers = ["No.", "Order #", "Date", "Part Number", "Qty", "Delivery ✏️", "Action"]
         
         # Display headers
         for i, header in enumerate(headers):
@@ -1131,15 +1132,30 @@ def main():
                     st.write(f"{row.iloc[4]}")  # Sales Order
                 with col7:
                     delivery_value = str(row.iloc[5])  # Delivery Date
-                    if delivery_value in ["Delivered", "TBD", ""]:
-                        st.write(delivery_value)
+                    
+                    # Make all delivery dates editable except "Delivered"
+                    if delivery_value == "Delivered":
+                        st.write("Delivered")
+                        delivery_date = None  # Can't change delivered orders
                     else:
-                        # Try to parse and display as editable date
+                        # Parse existing date or calculate default
                         parsed_date = parse_date_safely(delivery_value)
                         if parsed_date:
-                            st.write(delivery_value)  # Show original format
+                            default_delivery = parsed_date.date()
                         else:
-                            st.write(delivery_value)
+                            # Calculate default delivery date (18 business days from order date)
+                            order_dt = parse_date_safely(str(row.iloc[1]))
+                            if order_dt:
+                                default_delivery = business_days_from(order_dt, 18).date()
+                            else:
+                                default_delivery = business_days_from(datetime.now(), 18).date()
+                        
+                        delivery_date = st.date_input(
+                            "Delivery",
+                            value=default_delivery,
+                            key=f"delivery_{idx}",
+                            label_visibility="collapsed"
+                        )
                 with col8:
                     order_number = str(row.iloc[0])
                     if order_number in st.session_state.created_sos:
@@ -1155,8 +1171,12 @@ def main():
                             if st.button(f"Execute", key=f"execute_{idx}"):
                                 with st.spinner(f"Creating SO for Order {order_number}..."):
                                     order_data = row.tolist()
-                                    delivery_date = str(row.iloc[5])  # Use delivery date from column 5
-                                    so_number = create_sales_order(order_data, delivery_date)
+                                    # Use the editable delivery date if available, otherwise use original
+                                    if delivery_date is not None:
+                                        so_number = create_sales_order(order_data, delivery_date)
+                                    else:
+                                        so_number = create_sales_order(order_data, str(row.iloc[5]))
+                                    
                                     if so_number:
                                         st.session_state.created_sos[order_number] = so_number
                                         st.success(f"✅ Created SO: {so_number}")
@@ -1259,8 +1279,9 @@ def main():
         1. **Select Order Status** from the dropdown in the sidebar
         2. **Click 'Fetch Orders'** to retrieve orders from Swagelok portal
         3. **Review orders** in the main table
-        4. **Adjust delivery dates** as needed (for applicable order types)
+        4. **Adjust delivery dates** as needed (all dates are editable except "Delivered" orders)
         5. **Select 'Create SO'** from action dropdown and click Execute
+        6. **Modified delivery dates** will be used when creating the Sales Order
         """)
 
 if __name__ == "__main__":
