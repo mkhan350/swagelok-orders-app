@@ -1101,7 +1101,7 @@ def main():
         # Create proper table headers based on the order status
         if len(columns) == 6:  # Has Sales Order column (Order History and Order Modification)
             header_cols = st.columns([0.5, 1.2, 1.2, 2, 1, 1.2, 1.2, 1.5])
-            headers = ["No.", "Order #", "Date", "Part Number", "Qty", "Sales Order", "Delivery ✏️", "Action"]
+            headers = ["No.", "Order #", "Date", "Part Number", "Qty", "Sales Order", "Delivery Date", "Action"]
         else:  # No Sales Order column (Order New and others)
             header_cols = st.columns([0.5, 1.2, 1.2, 2, 1, 1.5, 1.5])
             headers = ["No.", "Order #", "Date", "Part Number", "Qty", "Delivery ✏️", "Action"]
