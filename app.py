@@ -34,8 +34,18 @@ st.markdown("""
     margin: 2px 0 !important;
 }
 
+.action-column .stSelectbox > div > div {
+    background-color: #2196f3 !important;
+    color: white !important;
+    border-radius: 4px !important;
+}
+
+.action-column .stSelectbox > div > div > div {
+    color: white !important;
+}
+
 .action-column .stSelectbox {
-    background-color: #e3f2fd !important;
+    background-color: #2196f3 !important;
 }
 
 .action-column .stButton > button {
@@ -1133,7 +1143,7 @@ def main():
         # Orders fetched - show orders table with proper headers
         st.header("Open Orders")
         st.write(f"**Found {len(st.session_state.orders_data)} orders:**")
-        st.info("💡 **Tip:** All delivery dates are editable - adjust them as needed before creating Sales Orders! Look for the blue action boxes to create SOs.")
+        st.info("💡 **Tip:** All delivery dates are editable - adjust them as needed before creating Sales Orders!")
         
         # Get column names from the DataFrame
         columns = st.session_state.orders_data.columns.tolist()
@@ -1141,10 +1151,10 @@ def main():
         # Create proper table headers based on the order status
         if len(columns) == 6:  # Has Sales Order column (Order History and Order Modification)
             header_cols = st.columns([0.5, 1.2, 1.2, 2, 1, 1.2, 1.2, 1.5])
-            headers = ["No.", "Order #", "Date", "Part Number", "Qty", "Sales Order", "Delivery ✏️", "🎯 Action"]
+            headers = ["No.", "Order #", "Date", "Part Number", "Qty", "Sales Order", "Delivery", "Action"]
         else:  # No Sales Order column (Order New and others)
             header_cols = st.columns([0.5, 1.2, 1.2, 2, 1, 1.5, 1.5])
-            headers = ["No.", "Order #", "Date", "Part Number", "Qty", "Delivery ✏️", "🎯 Action"]
+            headers = ["No.", "Order #", "Date", "Part Number", "Qty", "Delivery", "Action"]
         
         # Display headers
         for i, header in enumerate(headers):
@@ -1330,8 +1340,8 @@ def main():
         2. **Click 'Fetch Orders'** to retrieve orders from Swagelok portal
         3. **Review orders** in the main table
         4. **Adjust delivery dates** as needed (all dates are editable except "Delivered" orders)
-        5. **Look for blue action boxes** - Select 'Create SO' from dropdown and click Execute
-        6. **Modified delivery dates** (if needed) will be used when creating the Sales Order
+        5. **Select 'Create SO'** from blue action dropdown and click Execute
+        6. **Modified delivery dates** will be used when creating the Sales Order
         """)
 
 if __name__ == "__main__":
