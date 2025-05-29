@@ -1044,121 +1044,59 @@ def test_api_connection():
     except Exception as e:
         return False
 
-def cleanup_selenium_session():
-    """Force cleanup of any lingering Selenium processes"""
-    try:
-        import psutil
-        import signal
-        
-        # Kill any chrome/chromium processes
-        for proc in psutil.process_iter(['pid', 'name']):
-            try:
-                if 'chrome' in proc.info['name'].lower() or 'chromium' in proc.info['name'].lower():
-                    proc.kill()
-            except:
-                pass
-    except ImportError:
-        # psutil not available, skip process cleanup
-        pass
-    
-    # Add small delay to let processes cleanup
-    import time
-    time.sleep(2)
-
 def fetch_swagelok_orders(selected_status):
-    """Fetch orders from Swagelok portal using fresh Selenium session"""
+    """Fetch orders from Swagelok portal using simplified Selenium approach"""
     
-    # Force cleanup of any previous sessions
-    cleanup_selenium_session()
-    
-    # Setup Chrome options for maximum stability
+    # Use simple Chrome options like the original working code
     options = Options()
-    options.add_argument('--headless=new')
+    options.add_argument('--headless')
+    options.add_argument('--disable-gpu')
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
-    options.add_argument('--disable-gpu')
-    options.add_argument('--disable-extensions')
-    options.add_argument('--window-size=1920,1080')
-    options.add_argument('--disable-web-security')
-    options.add_argument('--disable-features=VizDisplayCompositor')
-    options.add_argument('--disable-background-timer-throttling')
-    options.add_argument('--disable-backgrounding-occluded-windows')
-    options.add_argument('--disable-renderer-backgrounding')
-    options.add_argument('--single-process')
-    options.add_argument('--disable-background-networking')
-    options.add_argument('--disable-blink-features=AutomationControlled')
-    options.add_argument('--disable-logging')
-    options.add_argument('--disable-dev-tools')
-    options.add_argument('--remote-debugging-port=0')  # Use random port
-    options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    options.add_experimental_option('useAutomationExtension', False)
-    options.add_experimental_option("detach", False)  # Ensure proper cleanup
-    
-    # For Streamlit Cloud with chromium packages
     options.binary_location = '/usr/bin/chromium'
     
     driver = None
-    wait = None
     
     try:
-        st.info(f"🔄 Starting fresh browser session for: {selected_status}")
+        st.info(f"🔄 Starting browser session for: {selected_status}")
         
-        # Create completely new driver instance
+        # Simple driver initialization
         try:
             service = Service('/usr/bin/chromedriver')
             driver = webdriver.Chrome(service=service, options=options)
         except:
-            # Fallback to webdriver-manager
             service = Service(ChromeDriverManager().install())
             driver = webdriver.Chrome(service=service, options=options)
         
-        # Set aggressive timeouts for stability
-        driver.set_page_load_timeout(30)
-        driver.implicitly_wait(5)
-        wait = WebDriverWait(driver, 25)
+        wait = WebDriverWait(driver, 10)
         
         st.info("🌐 Navigating to Swagelok portal...")
-        
-        # Navigate to Swagelok login
         driver.get("https://supplierportal.swagelok.com//login.aspx")
-        
-        st.info("🔐 Logging in...")
         
         # Login
         username_field = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_txtUsername")))
         password_field = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_txtPassword")))
         go_button = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_btnGo2")))
 
-        username_field.clear()
         username_field.send_keys("mstkhan")
-        password_field.clear()
         password_field.send_keys("Concept350!")
         go_button.click()
 
-        # Handle terms page if it appears
+        # Handle terms page
         try:
-            st.info("📋 Checking for terms page...")
             accept_terms_button = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_lnkAcceptTerms")))
             accept_terms_button.click()
-            st.info("✅ Terms accepted")
         except:
-            st.info("ℹ️ No terms page found")
+            st.info("No terms page found")
 
-        st.info("📦 Navigating to orders section...")
-        
         # Navigate to orders
         order_application_link = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_rptPortalApplications_ctl01_lnkPortalApplication")))
         order_application_link.click()
-        
-        # Switch to new window
         driver.switch_to.window(driver.window_handles[-1])
 
-        st.info(f"🔍 Setting up filters for: {selected_status}")
-        
         # Setup filters
         checkbox = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_chkOrdersRequiringAction")))
-        if not checkbox.is_selected():
-            checkbox.click()
+        checkbox.click()
 
         dropdown = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_cboRequestStatus")))
         for option in dropdown.find_elements(By.TAG_NAME, "option"):
@@ -1171,56 +1109,61 @@ def fetch_swagelok_orders(selected_status):
 
         st.info("📊 Extracting order data...")
         
-        # Extract order data with improved parsing
+        # Extract data using original logic
         data = []
         row_index = 1
-        max_iterations = 50  # Reduced for stability
+        max_iterations = 100
         
         while row_index <= max_iterations:
             try:
                 order_details_id = f"ctl00_MainContentPlaceHolder_rptResults_ctl{row_index:02d}_trDetails"
                 
-                # Use shorter timeout for individual elements
-                element_wait = WebDriverWait(driver, 3)
-                order_details_element = element_wait.until(EC.presence_of_element_located((By.ID, order_details_id)))
+                try:
+                    order_details_element = wait.until(EC.presence_of_element_located((By.ID, order_details_id)))
+                except:
+                    # No more rows found
+                    break
                 
                 order_details_text = order_details_element.text
+                st.write(f"**Debug Row {row_index}:** {order_details_text}")  # Debug output
+                
                 details = order_details_text.split()
                 
-                # Handle different order status formats
+                # Use original parsing logic
                 if selected_status == "Order - History":
-                    # Order History format: Order#, [space], [space], [space], Date, Part#, Qty, Sales Order, Delivery Date
+                    # Order History has Sales Order column: Order#, Date, Part#, Qty, Sales Order, Delivery Date
                     if len(details) >= 9:
-                        order_number = details[0]      # Position 0: Order Number
-                        order_date = details[4]        # Position 4: Date (after 4 spaces)  
-                        part_number = details[5]       # Position 5: Part Number
-                        quantity = details[6]          # Position 6: Quantity
-                        sales_order = details[7]       # Position 7: Sales Order
-                        delivery_date = details[8]     # Position 8: Delivery Date
+                        order_number = details[0]
+                        order_date = details[4]
+                        part_number = details[5]
+                        quantity = details[6]
+                        sales_order = details[7]
+                        delivery_date = details[8]
                         data.append([order_number, order_date, part_number, quantity, sales_order, delivery_date])
                 
-                elif selected_status in ["Order - New, Requires Supplier Action"]:
-                    # New orders format: Order#, Order Date, Part#, Qty, Delivery Date
+                elif selected_status in ["Order - New, Requires Supplier Action", "Order - Modification, Requires Supplier Action"]:
+                    # New/Modification orders: Order#, Date, Part#, Qty, Delivery Date
                     if len(details) >= 8:
                         order_number = details[0]
                         order_date = details[4]
                         part_number = details[5]
                         quantity = details[6]
-                        delivery_date = details[7]
+                        # Check if delivery date exists, otherwise calculate it
+                        if len(details) >= 8:
+                            delivery_date = details[7]
+                        else:
+                            # Calculate 18 business days from order date
+                            try:
+                                order_dt = datetime.strptime(order_date, "%m/%d/%Y")
+                                delivery_dt = business_days_from(order_dt, 18)
+                                delivery_date = delivery_dt.strftime("%m/%d/%Y")
+                            except:
+                                delivery_date = "TBD"
+                        
                         data.append([order_number, order_date, part_number, quantity, delivery_date])
                 
-                elif selected_status in ["Order - Modification, Requires Supplier Action"]:
-                    # Modification orders format: Similar to new orders
-                    if len(details) >= 8:
-                        order_number = details[0]
-                        order_date = details[4]
-                        part_number = details[5]
-                        quantity = details[6]
-                        delivery_date = details[7]
-                        data.append([order_number, order_date, part_number, quantity, delivery_date])
-                        
                 else:
-                    # Other formats (Ack - Sent, Ack - Accepted): Order#, Order Date, Part#, Qty
+                    # Other statuses (Ack - Sent, Ack - Accepted): Order#, Date, Part#, Qty only
                     if len(details) >= 10:
                         order_number = details[0]
                         order_date = details[7]
@@ -1231,19 +1174,12 @@ def fetch_swagelok_orders(selected_status):
                 row_index += 1
                 
             except Exception as e:
-                # If no more rows, timeout, or DevTools error, break gracefully
-                error_str = str(e).lower()
-                if any(x in error_str for x in ["timeout", "no such element", "devtools", "disconnected"]):
-                    break
-                else:
-                    st.warning(f"Error parsing row {row_index}: {str(e)}")
-                    row_index += 1
-                    if row_index > max_iterations:
-                        break
+                st.warning(f"Error parsing row {row_index}: {str(e)}")
+                break
 
         st.success(f"✅ Successfully extracted {len(data)} orders")
         
-        # Return appropriate headers and data based on order status
+        # Return appropriate headers based on order status
         if selected_status == "Order - History":
             return ["Order Number", "Order Date", "Part Number", "Quantity", "Sales Order", "Delivery Date"], data
         elif selected_status in ["Order - New, Requires Supplier Action", "Order - Modification, Requires Supplier Action"]:
@@ -1252,34 +1188,15 @@ def fetch_swagelok_orders(selected_status):
             return ["Order Number", "Order Date", "Part Number", "Quantity"], data
 
     except Exception as e:
-        error_msg = f"Scraping error: {str(e)}"
-        st.error(error_msg)
-        st.error("🔄 Session will be cleaned up for next attempt")
-        
+        st.error(f"Scraping error: {str(e)}")
         return [], []
         
     finally:
-        # AGGRESSIVE CLEANUP - Force close everything
-        st.info("🧹 Cleaning up browser session...")
-        
         if driver:
-            try:
-                # Close all windows
-                for handle in driver.window_handles:
-                    driver.switch_to.window(handle)
-                    driver.close()
-            except:
-                pass
-            
             try:
                 driver.quit()
             except:
                 pass
-        
-        # Force cleanup any remaining processes
-        cleanup_selenium_session()
-        
-        st.info("✅ Browser session cleaned up")
 
 if __name__ == "__main__":
     main()
