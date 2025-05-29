@@ -27,20 +27,20 @@ st.set_page_config(
 API_TOKEN = st.secrets["FULCRUM_API_TOKEN"]
 BASE_URL = "https://api.fulcrumpro.us/api"
 
-# ====== DATABASE MANAGEMENT WITH BACKUP SYSTEM ======
+# ====== DATABASE MANAGEMENT WITH GITHUB REPO BACKUP ======
 class UserDatabase:
-    """Handles persistent user storage with SQLite and JSON backup"""
+    """Handles persistent user storage with SQLite and GitHub repo backup"""
     
-    def __init__(self, db_path="swagelok_users.db", backup_path="users_backup.json"):
+    def __init__(self, db_path="swagelok_users.db", repo_backup_path="users_backup.json"):
         self.db_path = db_path
-        self.backup_path = backup_path
+        self.repo_backup_path = repo_backup_path
         self.init_database()
     
     def init_database(self):
-        """Initialize database and create tables"""
-        # Try to restore from backup if database doesn't exist
-        if not os.path.exists(self.db_path) and os.path.exists(self.backup_path):
-            self.restore_from_backup()
+        """Initialize database and load from repo backup if available"""
+        # Try to load from repo backup file first
+        if os.path.exists(self.repo_backup_path):
+            self.load_from_repo_backup()
         
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
@@ -69,15 +69,69 @@ class UserDatabase:
                 INSERT INTO users (username, first_name, last_name, password_hash, is_admin)
                 VALUES (?, ?, ?, ?, ?)
             ''', ("mstkhan", "Muhammad", "Khan", admin_password_hash, True))
+            conn.commit()
+            # Update repo backup after creating admin
+            self.create_repo_backup()
             
-        conn.commit()
         conn.close()
-        
-        # Create initial backup
-        self.backup_to_json()
     
-    def backup_to_json(self):
-        """Backup all user data to JSON file"""
+    def load_from_repo_backup(self):
+        """Load user data from repo backup file"""
+        try:
+            if not os.path.exists(self.repo_backup_path):
+                return False
+            
+            with open(self.repo_backup_path, 'r') as f:
+                backup_data = json.load(f)
+            
+            # Skip if backup is empty or invalid
+            if not backup_data.get("users"):
+                return False
+                
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Create table if not exists
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS users (
+                    username TEXT PRIMARY KEY,
+                    first_name TEXT NOT NULL,
+                    last_name TEXT NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    is_admin BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_login TIMESTAMP
+                )
+            ''')
+            
+            # Load users from backup
+            for user in backup_data["users"]:
+                cursor.execute('''
+                    INSERT OR REPLACE INTO users 
+                    (username, first_name, last_name, password_hash, is_admin, created_at, last_login)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    user["username"],
+                    user["first_name"], 
+                    user["last_name"],
+                    user["password_hash"],
+                    user["is_admin"],
+                    user.get("created_at"),
+                    user.get("last_login")
+                ))
+            
+            conn.commit()
+            conn.close()
+            
+            st.success(f"✅ Loaded {len(backup_data['users'])} users from repo backup!")
+            return True
+            
+        except Exception as e:
+            st.error(f"Failed to load from repo backup: {str(e)}")
+            return False
+    
+    def create_repo_backup(self):
+        """Create backup file that can be committed to repo"""
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
@@ -104,66 +158,23 @@ class UserDatabase:
                     "last_login": user[6]
                 })
             
-            # Write backup file
-            with open(self.backup_path, 'w') as f:
+            # Write backup file to repo location
+            with open(self.repo_backup_path, 'w') as f:
                 json.dump(backup_data, f, indent=2)
             
             conn.close()
-            st.write(f"✅ User data backed up to {self.backup_path}")
+            return backup_data
             
         except Exception as e:
-            st.error(f"Backup failed: {str(e)}")
+            st.error(f"Backup creation failed: {str(e)}")
+            return None
     
-    def restore_from_backup(self):
-        """Restore user data from JSON backup"""
-        try:
-            if not os.path.exists(self.backup_path):
-                return False
-            
-            with open(self.backup_path, 'r') as f:
-                backup_data = json.load(f)
-            
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            # Create table if not exists
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS users (
-                    username TEXT PRIMARY KEY,
-                    first_name TEXT NOT NULL,
-                    last_name TEXT NOT NULL,
-                    password_hash TEXT NOT NULL,
-                    is_admin BOOLEAN DEFAULT FALSE,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    last_login TIMESTAMP
-                )
-            ''')
-            
-            # Restore users
-            for user in backup_data["users"]:
-                cursor.execute('''
-                    INSERT OR REPLACE INTO users 
-                    (username, first_name, last_name, password_hash, is_admin, created_at, last_login)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    user["username"],
-                    user["first_name"], 
-                    user["last_name"],
-                    user["password_hash"],
-                    user["is_admin"],
-                    user["created_at"],
-                    user["last_login"]
-                ))
-            
-            conn.commit()
-            conn.close()
-            
-            st.success(f"✅ Restored {len(backup_data['users'])} users from backup!")
-            return True
-            
-        except Exception as e:
-            st.error(f"Restore failed: {str(e)}")
-            return False
+    def get_backup_download(self):
+        """Get backup data for download"""
+        backup_data = self.create_repo_backup()
+        if backup_data:
+            return json.dumps(backup_data, indent=2)
+        return None
     
     def hash_password(self, password):
         """Hash password using SHA-256"""
@@ -174,7 +185,7 @@ class UserDatabase:
         return self.hash_password(password) == password_hash
     
     def create_user(self, username, first_name, last_name, password, is_admin=False):
-        """Create new user and backup"""
+        """Create new user and update repo backup"""
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
@@ -194,8 +205,8 @@ class UserDatabase:
             conn.commit()
             conn.close()
             
-            # Backup after change
-            self.backup_to_json()
+            # Update repo backup after user creation
+            self.create_repo_backup()
             
             return True, "User created successfully"
             
@@ -203,7 +214,7 @@ class UserDatabase:
             return False, f"Database error: {str(e)}"
     
     def authenticate_user(self, username, password):
-        """Authenticate user login and backup"""
+        """Authenticate user login and update backup"""
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
@@ -222,8 +233,8 @@ class UserDatabase:
                 conn.commit()
                 conn.close()
                 
-                # Backup after login update
-                self.backup_to_json()
+                # Update repo backup after login
+                self.create_repo_backup()
                 
                 return True, {
                     'username': user[0],
@@ -239,7 +250,7 @@ class UserDatabase:
             return False, f"Database error: {str(e)}"
     
     def change_password(self, username, old_password, new_password):
-        """Change user password and backup"""
+        """Change user password and update backup"""
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
@@ -263,8 +274,8 @@ class UserDatabase:
             conn.commit()
             conn.close()
             
-            # Backup after change
-            self.backup_to_json()
+            # Update repo backup after password change
+            self.create_repo_backup()
             
             return True, "Password changed successfully"
             
@@ -289,26 +300,21 @@ class UserDatabase:
             st.error(f"Database error: {str(e)}")
             return []
     
-    def manual_backup(self):
-        """Manual backup trigger for admin"""
-        self.backup_to_json()
-        return "Backup completed successfully!"
-    
-    def view_backup_status(self):
-        """Show backup file status"""
-        if os.path.exists(self.backup_path):
+    def get_backup_status(self):
+        """Get status of repo backup file"""
+        if os.path.exists(self.repo_backup_path):
             try:
-                with open(self.backup_path, 'r') as f:
+                with open(self.repo_backup_path, 'r') as f:
                     backup_data = json.load(f)
                 
                 backup_time = backup_data.get("backup_timestamp", "Unknown")
                 user_count = len(backup_data.get("users", []))
                 
-                return f"✅ Backup exists: {user_count} users, last backup: {backup_time}"
+                return True, f"✅ {user_count} users, updated: {backup_time[:19]}"
             except:
-                return "⚠️ Backup file exists but corrupted"
+                return False, "⚠️ Backup file corrupted"
         else:
-            return "❌ No backup file found"
+            return False, "❌ No backup file found"
 
 # Initialize database
 @st.cache_resource
@@ -521,10 +527,38 @@ def change_password_form():
                     st.error(f"❌ {message}")
 
 def view_users_form():
-    """View all users (admin only)"""
+    """View all users and backup management (admin only)"""
     st.subheader("👥 All Users")
     
     user_db = get_user_db()
+    
+    # Backup status section
+    st.markdown("### 📁 Repo Backup Status")
+    backup_exists, backup_status = user_db.get_backup_status()
+    
+    if backup_exists:
+        st.success(backup_status)
+    else:
+        st.warning(backup_status)
+    
+    # Backup management
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("📄 Download Updated Backup"):
+            backup_json = user_db.get_backup_download()
+            if backup_json:
+                st.download_button(
+                    label="💾 Download users_backup.json",
+                    data=backup_json,
+                    file_name="users_backup.json",
+                    mime="application/json"
+                )
+                st.info("📋 **Instructions:** Download this file and replace `users_backup.json` in your GitHub repo to make changes permanent.")
+    
+    with col2:
+        st.info("🔄 Backup auto-updates on user changes")
+    
+    st.markdown("### 👤 User List")
     users = user_db.get_all_users()
     
     if users:
@@ -532,6 +566,20 @@ def view_users_form():
             'Username', 'First Name', 'Last Name', 'Admin', 'Created', 'Last Login'
         ])
         st.dataframe(df, use_container_width=True)
+        
+        st.markdown("### 📋 How Repo Backup Works")
+        st.markdown("""
+        **Automatic Process:**
+        - ✅ **Auto-loads** from `users_backup.json` in your repo on app start
+        - ✅ **Auto-updates** backup file after every user change
+        - ✅ **Survives rebuilds** when backup file is in your GitHub repo
+        
+        **To Make Changes Permanent:**
+        1. **Download** updated backup using button above
+        2. **Replace** `users_backup.json` in your GitHub repo  
+        3. **Commit & push** to GitHub
+        4. **Users persist** across all future app rebuilds!
+        """)
     else:
         st.info("No users found")
 
@@ -674,26 +722,8 @@ def main():
     # Get current user info from session
     current_user = st.session_state.current_user
     
-    # Header with title and account menu
-    header_col1, header_col2 = st.columns([3, 1])
-    
-    with header_col1:
-        st.title("Swagelok Open Orders")
-    
-    with header_col2:
-        # Account dropdown menu
-        with st.expander("Account"):
-            if current_user['is_admin']:
-                if st.button("👤 Create Users", use_container_width=True):
-                    st.session_state.show_create_user = True
-                if st.button("👥 View Users", use_container_width=True):
-                    st.session_state.show_view_users = True
-            
-            if st.button("🔒 Change Password", use_container_width=True):
-                st.session_state.show_change_password = True
-            
-            if st.button("🚪 Logout", use_container_width=True):
-                logout()
+    # Header with just the title
+    st.title("Swagelok Open Orders")
     
     # Show user management forms if requested
     if st.session_state.get('show_create_user', False):
@@ -754,6 +784,19 @@ def main():
                     st.success("✅ API connection successful!")
                 else:
                     st.error("❌ API connection failed")
+        
+        # Backup status (for admins)
+        if current_user['is_admin']:
+            st.markdown("---")
+            st.markdown("**📁 Backup Status**")
+            user_db = get_user_db()
+            backup_status = user_db.view_backup_status()
+            if "✅" in backup_status:
+                st.success("Backup Active")
+            elif "⚠️" in backup_status:
+                st.warning("Backup Issue")
+            else:
+                st.error("No Backup")
     
     # Main content area
     if st.session_state.orders_data is not None:
