@@ -10,6 +10,11 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
+import json
+import io
+import sqlite3
+import hashlib
+import os
 
 # Page setup
 st.set_page_config(
@@ -22,24 +27,311 @@ st.set_page_config(
 API_TOKEN = st.secrets["FULCRUM_API_TOKEN"]
 BASE_URL = "https://api.fulcrumpro.us/api"
 
+# ====== DATABASE MANAGEMENT FOR USER STORAGE ======
+class UserDatabase:
+    """Handles persistent user storage with SQLite"""
+    
+    def __init__(self, db_path="swagelok_users.db"):
+        self.db_path = db_path
+        self.init_database()
+    
+    def init_database(self):
+        """Initialize database and create tables"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        # Create users table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                username TEXT PRIMARY KEY,
+                first_name TEXT NOT NULL,
+                last_name TEXT NOT NULL,
+                password_hash TEXT NOT NULL,
+                is_admin BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_login TIMESTAMP
+            )
+        ''')
+        
+        # Create admin user if not exists
+        admin_exists = cursor.execute(
+            "SELECT username FROM users WHERE username = ?", ("mstkhan",)
+        ).fetchone()
+        
+        if not admin_exists:
+            admin_password_hash = self.hash_password("swagelok2025")
+            cursor.execute('''
+                INSERT INTO users (username, first_name, last_name, password_hash, is_admin)
+                VALUES (?, ?, ?, ?, ?)
+            ''', ("mstkhan", "Muhammad", "Khan", admin_password_hash, True))
+            
+        conn.commit()
+        conn.close()
+    
+    def hash_password(self, password):
+        """Hash password using SHA-256"""
+        return hashlib.sha256(password.encode()).hexdigest()
+    
+    def verify_password(self, password, password_hash):
+        """Verify password against hash"""
+        return self.hash_password(password) == password_hash
+    
+    def create_user(self, username, first_name, last_name, password, is_admin=False):
+        """Create new user"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Check if user exists
+            if cursor.execute("SELECT username FROM users WHERE username = ?", (username,)).fetchone():
+                conn.close()
+                return False, "Username already exists"
+            
+            # Create user
+            password_hash = self.hash_password(password)
+            cursor.execute('''
+                INSERT INTO users (username, first_name, last_name, password_hash, is_admin)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (username, first_name, last_name, password_hash, is_admin))
+            
+            conn.commit()
+            conn.close()
+            return True, "User created successfully"
+            
+        except Exception as e:
+            return False, f"Database error: {str(e)}"
+    
+    def authenticate_user(self, username, password):
+        """Authenticate user login"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            user = cursor.execute('''
+                SELECT username, first_name, last_name, password_hash, is_admin
+                FROM users WHERE username = ?
+            ''', (username,)).fetchone()
+            
+            if user and self.verify_password(password, user[3]):
+                # Update last login
+                cursor.execute(
+                    "UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE username = ?",
+                    (username,)
+                )
+                conn.commit()
+                conn.close()
+                
+                return True, {
+                    'username': user[0],
+                    'first_name': user[1],
+                    'last_name': user[2],
+                    'is_admin': bool(user[4])
+                }
+            
+            conn.close()
+            return False, "Invalid username or password"
+            
+        except Exception as e:
+            return False, f"Database error: {str(e)}"
+    
+    def change_password(self, username, old_password, new_password):
+        """Change user password"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Get current password hash
+            user = cursor.execute(
+                "SELECT password_hash FROM users WHERE username = ?", (username,)
+            ).fetchone()
+            
+            if not user or not self.verify_password(old_password, user[0]):
+                conn.close()
+                return False, "Current password is incorrect"
+            
+            # Update password
+            new_password_hash = self.hash_password(new_password)
+            cursor.execute(
+                "UPDATE users SET password_hash = ? WHERE username = ?",
+                (new_password_hash, username)
+            )
+            
+            conn.commit()
+            conn.close()
+            return True, "Password changed successfully"
+            
+        except Exception as e:
+            return False, f"Database error: {str(e)}"
+    
+    def get_all_users(self):
+        """Get all users (admin only)"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            users = cursor.execute('''
+                SELECT username, first_name, last_name, is_admin, created_at, last_login
+                FROM users ORDER BY created_at DESC
+            ''').fetchall()
+            
+            conn.close()
+            return users
+            
+        except Exception as e:
+            st.error(f"Database error: {str(e)}")
+            return []
+
+# Initialize database
+@st.cache_resource
+def get_user_db():
+    return UserDatabase()
+
 # Initialize session state
 if 'orders_data' not in st.session_state:
     st.session_state.orders_data = None
 if 'created_sos' not in st.session_state:
     st.session_state.created_sos = {}
+if 'updated_delivery_dates' not in st.session_state:
+    st.session_state.updated_delivery_dates = {}
 if 'current_user' not in st.session_state:
     st.session_state.current_user = None
-if 'users_db' not in st.session_state:
-    # Initialize with admin user
-    st.session_state.users_db = {
-        'mstkhan': {
-            'first_name': 'Muhammad',
-            'last_name': 'Khan',
-            'username': 'mstkhan',
-            'password': 'swagelok2025',
-            'is_admin': True
+
+# ====== MIGRATED API CLIENT FROM DESKTOP APP ======
+class OptimizedFulcrumAPI:
+    """Migrated from desktop app - handles all Fulcrum API operations"""
+    
+    def __init__(self, token):
+        self.api_token = token
+        self.headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json"
         }
-    }
+        self.base_url = BASE_URL
+        
+    def _make_request(self, method, url, payload=None, max_retries=3):
+        """Generic method with retry logic and better error handling"""
+        for attempt in range(max_retries):
+            try:
+                if method.upper() == "GET":
+                    response = requests.get(url, headers=self.headers, timeout=30)
+                elif method.upper() == "POST":
+                    response = requests.post(url, json=payload, headers=self.headers, timeout=30)
+                elif method.upper() == "DELETE":
+                    response = requests.delete(url, headers=self.headers, timeout=30)
+                else:
+                    raise ValueError(f"Unsupported HTTP method: {method}")
+                
+                if response.status_code in [200, 201, 204]:
+                    return response.json() if response.content else {}
+                elif response.status_code == 429:  # Rate limit
+                    wait_time = 2 ** attempt
+                    st.info(f"Rate limited. Waiting {wait_time} seconds...")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    st.error(f"API Error {response.status_code}: {response.text}")
+                    return None
+                    
+            except requests.exceptions.Timeout:
+                st.error(f"Request timeout on attempt {attempt + 1}")
+                if attempt == max_retries - 1:
+                    return None
+            except requests.exceptions.RequestException as e:
+                st.error(f"Request error on attempt {attempt + 1}: {e}")
+                if attempt == max_retries - 1:
+                    return None
+                time.sleep(1)
+        
+        return None
+    
+    def check_item_exists(self, part_number):
+        """Check if item exists and return its ID"""
+        url = f"{self.base_url}/items/list/v2"
+        payload = {
+            "numbers": [{"query": part_number, "mode": "equal"}],
+            "latestRevision": True
+        }
+        
+        response_data = self._make_request("POST", url, payload)
+        if response_data and isinstance(response_data, list) and len(response_data) > 0:
+            item_id = response_data[0]["id"]
+            st.success(f"Part '{part_number}' exists with ID: {item_id}")
+            return item_id
+        return None
+    
+    def create_item(self, part_number, description, price=None):
+        """Create new item"""
+        url = f"{self.base_url}/items"
+        payload = {
+            "number": part_number,
+            "description": description or f"Swagelok Part {part_number}",
+            "itemOrigin": "make",
+            "unitTypeName": "Pieces",
+            "unitOfMeasureName": "Pieces",
+            "isSellable": True,
+            "isTaxable": False,
+            "minimumStockOnHand": 0,
+            "minimumProductionQuantity": 0,
+            "isLotTracked": True,
+            "accountingCodeId": "63c80b38cd088c5cb605e40b",
+            "categoryId": "65d508869733af68c352bdca"
+        }
+        
+        response_data = self._make_request("POST", url, payload)
+        if response_data and "id" in response_data:
+            item_id = response_data["id"]
+            st.success(f"Created item with ID: {item_id}")
+            return item_id
+        
+        st.error("Failed to create item")
+        return None
+    
+    def create_sales_order(self, order_data):
+        """Create sales order"""
+        url = f"{self.base_url}/sales-orders"
+        
+        response_data = self._make_request("POST", url, order_data)
+        if response_data and "id" in response_data:
+            return response_data["id"]
+        return None
+    
+    def get_sales_order_details(self, sales_order_id):
+        """Get sales order details"""
+        url = f"{self.base_url}/sales-orders/{sales_order_id}"
+        return self._make_request("GET", url)
+    
+    def add_part_line_item(self, sales_order_id, item_id, quantity, price):
+        """Add part line item to sales order"""
+        try:
+            price_float = round(float(price), 2)
+            if price_float <= 0.0:
+                st.error(f"Invalid price ({price_float}) for part line item")
+                return False
+
+            url = f"{self.base_url}/sales-orders/{sales_order_id}/part-line-items"
+            payload = {
+                "itemId": item_id,
+                "quantity": quantity,
+                "price": price_float,
+            }
+
+            response_data = self._make_request("POST", url, payload)
+            if response_data:
+                st.success(f"Part line item added to sales order")
+                return True
+            else:
+                st.error("Failed to add part line item")
+                return False
+
+        except (ValueError, TypeError) as e:
+            st.error(f"Invalid price value: {price}. Error: {e}")
+            return False
+
+# Initialize API client
+@st.cache_resource
+def get_api_client():
+    return OptimizedFulcrumAPI(API_TOKEN)
 
 # User Management Functions
 def create_user_form():
@@ -55,21 +347,18 @@ def create_user_form():
             last_name = st.text_input("Last Name")
             password = st.text_input("Password", type="password")
         
+        is_admin = st.checkbox("Admin User")
         submitted = st.form_submit_button("Create User")
         
         if submitted:
             if first_name and last_name and username and password:
-                if username not in st.session_state.users_db:
-                    st.session_state.users_db[username] = {
-                        'first_name': first_name,
-                        'last_name': last_name,
-                        'username': username,
-                        'password': password,
-                        'is_admin': False
-                    }
-                    st.success(f"✅ User {first_name} {last_name} created successfully!")
+                user_db = get_user_db()
+                success, message = user_db.create_user(username, first_name, last_name, password, is_admin)
+                
+                if success:
+                    st.success(f"✅ {message}")
                 else:
-                    st.error("❌ Username already exists!")
+                    st.error(f"❌ {message}")
             else:
                 st.error("❌ Please fill all fields!")
 
@@ -85,19 +374,41 @@ def change_password_form():
         submitted = st.form_submit_button("Change Password")
         
         if submitted:
-            current_user = st.session_state.users_db[st.session_state.current_user]
-            if current_password == current_user['password']:
-                if new_password == confirm_password and new_password:
-                    st.session_state.users_db[st.session_state.current_user]['password'] = new_password
-                    st.success("✅ Password changed successfully!")
-                else:
-                    st.error("❌ New passwords don't match or are empty!")
+            if new_password != confirm_password:
+                st.error("❌ New passwords don't match!")
+            elif not new_password:
+                st.error("❌ Password cannot be empty!")
             else:
-                st.error("❌ Current password is incorrect!")
+                user_db = get_user_db()
+                success, message = user_db.change_password(
+                    st.session_state.current_user['username'], 
+                    current_password, 
+                    new_password
+                )
+                
+                if success:
+                    st.success(f"✅ {message}")
+                else:
+                    st.error(f"❌ {message}")
+
+def view_users_form():
+    """View all users (admin only)"""
+    st.subheader("👥 All Users")
+    
+    user_db = get_user_db()
+    users = user_db.get_all_users()
+    
+    if users:
+        df = pd.DataFrame(users, columns=[
+            'Username', 'First Name', 'Last Name', 'Admin', 'Created', 'Last Login'
+        ])
+        st.dataframe(df, use_container_width=True)
+    else:
+        st.info("No users found")
 
 # Authentication
 def login_form():
-    """Login form"""
+    """Login form with database authentication"""
     st.title("🏭 Swagelok Orders Manager")
     st.subheader("🔐 Login")
     
@@ -107,20 +418,97 @@ def login_form():
         submitted = st.form_submit_button("Login")
         
         if submitted:
-            if username in st.session_state.users_db:
-                if st.session_state.users_db[username]['password'] == password:
-                    st.session_state.current_user = username
-                    st.experimental_rerun()
-                else:
-                    st.error("❌ Incorrect password!")
+            user_db = get_user_db()
+            success, result = user_db.authenticate_user(username, password)
+            
+            if success:
+                st.session_state.current_user = result
+                st.experimental_rerun()
             else:
-                st.error("❌ Username not found!")
+                st.error(f"❌ {result}")
 
 def logout():
     """Logout function"""
     st.session_state.current_user = None
     st.session_state.orders_data = None
     st.experimental_rerun()
+
+# Business Logic Functions
+def business_days_from(start_date, days):
+    """Calculate business days from start date"""
+    current_date = start_date
+    while days > 0:
+        current_date += timedelta(days=1)
+        if current_date.weekday() < 5:
+            days -= 1
+    return current_date
+
+def process_part_number(part_number, manual_price=None):
+    """Process part number - simplified for web version"""
+    api_client = get_api_client()
+    
+    # Check if item exists
+    existing_item_id = api_client.check_item_exists(part_number)
+    
+    if existing_item_id:
+        st.info(f"Item {part_number} already exists in system")
+        return existing_item_id, manual_price or 100.0  # Default price
+    else:
+        # Create new item
+        description = f"Swagelok Part {part_number}"
+        item_id = api_client.create_item(part_number, description)
+        return item_id, manual_price or 100.0  # Default price
+
+def create_sales_order(order_row, delivery_date=None):
+    """Create sales order from order data"""
+    api_client = get_api_client()
+    
+    order_number = order_row[0]
+    order_date = order_row[1]
+    part_number = order_row[2]
+    quantity = int(order_row[3])
+    
+    # Calculate due date
+    if delivery_date:
+        due_date_str = delivery_date
+    else:
+        due_date_str = order_row[4] if len(order_row) > 4 else business_days_from(datetime.strptime(order_date, "%m/%d/%Y"), 18).strftime("%m/%d/%Y")
+    
+    # Format due date
+    if "-" in due_date_str:
+        due_date_final = due_date_str
+    else:
+        due_date = datetime.strptime(due_date_str, "%m/%d/%Y")
+        due_date_final = due_date.strftime("%Y-%m-%d")
+    
+    # Create sales order payload
+    payload = {
+        "customerId": "654241f9c77f04d8d76410c4",  # Swagelok customer ID
+        "customerPoNumber": order_number,
+        "orderedDate": datetime.strptime(order_date, "%m/%d/%Y").strftime("%Y-%m-%d"),
+        "contact": {"firstName": "Kristian", "lastName": "Barnett"},
+        "dueDate": due_date_final,
+    }
+    
+    # Create sales order
+    sales_order_id = api_client.create_sales_order(payload)
+    if not sales_order_id:
+        st.error("Failed to create sales order")
+        return None
+    
+    # Get sales order details to get the SO number
+    so_details = api_client.get_sales_order_details(sales_order_id)
+    sales_order_number = so_details.get("number") if so_details else "Unknown"
+    
+    # Process part and add to order
+    item_id, price = process_part_number(part_number)
+    if item_id:
+        api_client.add_part_line_item(sales_order_id, item_id, quantity, price)
+        st.success(f"✅ Sales Order {sales_order_number} created successfully!")
+        return sales_order_number
+    else:
+        st.error(f"Failed to process part {part_number}")
+        return None
 
 # Main app
 def main():
@@ -129,11 +517,11 @@ def main():
         login_form()
         return
     
-    # Get current user info
-    current_user = st.session_state.users_db[st.session_state.current_user]
+    # Get current user info from session (already contains user data from database)
+    current_user = st.session_state.current_user
     
     # Header with user info and buttons
-    header_col1, header_col2, header_col3 = st.columns([3, 1, 1])
+    header_col1, header_col2, header_col3, header_col4 = st.columns([2, 1, 1, 1])
     
     with header_col1:
         st.title("🏭 Swagelok Orders Manager")
@@ -144,14 +532,26 @@ def main():
                 st.session_state.show_create_user = True
     
     with header_col3:
+        if current_user['is_admin']:
+            if st.button("👥 View Users"):
+                st.session_state.show_view_users = True
+    
+    with header_col4:
         if st.button("🚪 Logout"):
             logout()
     
     # Show user management forms if requested
-    if current_user['is_admin'] and st.session_state.get('show_create_user', False):
+    if st.session_state.get('show_create_user', False):
         create_user_form()
         if st.button("← Back to Orders"):
             st.session_state.show_create_user = False
+            st.experimental_rerun()
+        return
+    
+    if st.session_state.get('show_view_users', False):
+        view_users_form()
+        if st.button("← Back to Orders"):
+            st.session_state.show_view_users = False
             st.experimental_rerun()
         return
     
@@ -184,13 +584,18 @@ def main():
                 except Exception as e:
                     st.error(f"❌ Error fetching orders: {str(e)}")
         
-        # App info (moved from main page)
+        # App info
         st.header("📊 App Info")
         if st.session_state.orders_data is not None:
             st.metric("Total Orders", len(st.session_state.orders_data))
         else:
             st.metric("Total Orders", "0")
         st.metric("SOs Created", len(st.session_state.created_sos))
+        
+        # Get user count from database
+        user_db = get_user_db()
+        user_count = len(user_db.get_all_users())
+        st.metric("Total Users", user_count)
         st.metric("API Status", "🟢 Online")
         
         # Test API connection
@@ -228,32 +633,63 @@ def main():
         # Display table
         st.dataframe(df_display, use_container_width=True)
         
-        # Actions section with dropdowns
+        # Actions section with enhanced controls
         st.subheader("🔧 Actions")
+        
         for idx, row in st.session_state.orders_data.iterrows():
-            col1, col2, col3, col4 = st.columns([1, 3, 2, 2])
+            col1, col2, col3, col4, col5 = st.columns([0.5, 2.5, 1.5, 1.5, 1])
             
             with col1:
                 st.write(f"**{idx + 1}.**")
             
             with col2:
-                st.write(f"**Order:** {row.iloc[0]} | **Part:** {row.iloc[2]}")
+                st.write(f"**Order:** {row.iloc[0]}")
+                st.write(f"**Part:** {row.iloc[2]}")
             
             with col3:
                 st.write(f"**Qty:** {row.iloc[3]}")
+                # Add price input for manual override
+                price_key = f"price_{idx}"
+                if price_key not in st.session_state:
+                    st.session_state[price_key] = 100.0
+                st.session_state[price_key] = st.number_input(
+                    "Price ($)", 
+                    min_value=0.01, 
+                    value=st.session_state[price_key],
+                    key=f"price_input_{idx}",
+                    step=0.01
+                )
             
             with col4:
-                action = st.selectbox(
-                    "Action",
-                    ["Select Action", "Create SO"],
-                    key=f"action_{idx}",
-                    label_visibility="collapsed"
-                )
+                # Delivery date picker
+                if len(row) > 4:
+                    default_date = datetime.strptime(row.iloc[4], "%m/%d/%Y").date()
+                else:
+                    default_date = business_days_from(datetime.now(), 18).date()
                 
-                if action == "Create SO":
-                    if st.button(f"Execute", key=f"execute_{idx}"):
-                        st.info(f"Creating SO for Order {row.iloc[0]}...")
-                        # SO creation functionality will be implemented here
+                delivery_date = st.date_input(
+                    "Delivery Date",
+                    value=default_date,
+                    key=f"delivery_{idx}"
+                )
+            
+            with col5:
+                order_number = row.iloc[0]
+                
+                if order_number in st.session_state.created_sos:
+                    st.success(f"✅ SO: {st.session_state.created_sos[order_number]}")
+                else:
+                    if st.button(f"Create SO", key=f"create_so_{idx}"):
+                        with st.spinner(f"Creating SO for Order {order_number}..."):
+                            # Convert row to list and add price
+                            order_data = row.tolist()
+                            manual_price = st.session_state[price_key]
+                            
+                            # Create sales order
+                            so_number = create_sales_order(order_data, delivery_date.strftime("%Y-%m-%d"))
+                            if so_number:
+                                st.session_state.created_sos[order_number] = so_number
+                                st.experimental_rerun()
     
     else:
         # Welcome screen
@@ -270,19 +706,26 @@ def main():
             1. **Select Order Status** from the dropdown in the sidebar
             2. **Click 'Fetch Orders'** to retrieve orders from Swagelok portal
             3. **Review orders** in the main table
-            4. **Use Action dropdowns** to create SOs for specific orders
+            4. **Adjust prices and delivery dates** as needed
+            5. **Click 'Create SO'** to create sales orders
             """)
         
         with col2:
             st.markdown("### Quick Stats")
             st.metric("Your Role", "Admin" if current_user['is_admin'] else "User")
-            st.metric("Active Users", len(st.session_state.users_db))
+            
+            # Get user count from database
+            user_db = get_user_db()
+            user_count = len(user_db.get_all_users())
+            st.metric("Active Users", user_count)
 
 def test_api_connection():
     """Test connection to Fulcrum API"""
     try:
+        api_client = get_api_client()
+        # Try a simple API call
         headers = {
-            "Authorization": f"Bearer {API_TOKEN}",
+            "Authorization": f"Bearer {api_client.api_token}",
             "Content-Type": "application/json",
             "Accept": "application/json"
         }
@@ -410,16 +853,6 @@ def fetch_swagelok_orders(selected_status):
     except Exception as e:
         error_msg = f"Scraping error: {str(e)}"
         st.error(error_msg)
-        
-        # Debug info for deployment issues
-        try:
-            import os
-            st.write("**Debug Info:**")
-            st.write(f"Chromium exists: {os.path.exists('/usr/bin/chromium')}")
-            st.write(f"ChromeDriver exists: {os.path.exists('/usr/bin/chromedriver')}")
-        except:
-            pass
-            
         return [], []
         
     finally:
