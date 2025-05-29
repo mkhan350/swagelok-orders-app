@@ -23,6 +23,46 @@ st.set_page_config(
     layout="wide"
 )
 
+# Custom CSS for action column styling
+st.markdown("""
+<style>
+.action-column {
+    background-color: #e3f2fd !important;
+    border-radius: 8px !important;
+    padding: 8px !important;
+    border: 2px solid #2196f3 !important;
+    margin: 2px 0 !important;
+}
+
+.action-column .stSelectbox {
+    background-color: #e3f2fd !important;
+}
+
+.action-column .stButton > button {
+    background-color: #2196f3 !important;
+    color: white !important;
+    border: none !important;
+    border-radius: 4px !important;
+    font-weight: bold !important;
+}
+
+.action-column .stButton > button:hover {
+    background-color: #1976d2 !important;
+    color: white !important;
+}
+
+.success-action {
+    background-color: #e8f5e8 !important;
+    border: 2px solid #4caf50 !important;
+    border-radius: 8px !important;
+    padding: 8px !important;
+    text-align: center !important;
+    font-weight: bold !important;
+    color: #2e7d32 !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
 # Your API configurations
 API_TOKEN = st.secrets["FULCRUM_API_TOKEN"]
 BASE_URL = "https://api.fulcrumpro.us/api"
@@ -1093,7 +1133,7 @@ def main():
         # Orders fetched - show orders table with proper headers
         st.header("Open Orders")
         st.write(f"**Found {len(st.session_state.orders_data)} orders:**")
-        st.info("💡 **Tip:** All delivery dates are editable - adjust them as needed before creating Sales Orders!")
+        st.info("💡 **Tip:** All delivery dates are editable - adjust them as needed before creating Sales Orders! Look for the blue action boxes to create SOs.")
         
         # Get column names from the DataFrame
         columns = st.session_state.orders_data.columns.tolist()
@@ -1101,10 +1141,10 @@ def main():
         # Create proper table headers based on the order status
         if len(columns) == 6:  # Has Sales Order column (Order History and Order Modification)
             header_cols = st.columns([0.5, 1.2, 1.2, 2, 1, 1.2, 1.2, 1.5])
-            headers = ["No.", "Order #", "Date", "Part Number", "Qty", "Sales Order", "Delivery ✏️", "Action"]
+            headers = ["No.", "Order #", "Date", "Part Number", "Qty", "Sales Order", "Delivery ✏️", "🎯 Action"]
         else:  # No Sales Order column (Order New and others)
             header_cols = st.columns([0.5, 1.2, 1.2, 2, 1, 1.5, 1.5])
-            headers = ["No.", "Order #", "Date", "Part Number", "Qty", "Delivery ✏️", "Action"]
+            headers = ["No.", "Order #", "Date", "Part Number", "Qty", "Delivery ✏️", "🎯 Action"]
         
         # Display headers
         for i, header in enumerate(headers):
@@ -1159,30 +1199,35 @@ def main():
                 with col8:
                     order_number = str(row.iloc[0])
                     if order_number in st.session_state.created_sos:
-                        st.success(f"SO: {st.session_state.created_sos[order_number]}")
+                        st.markdown(f'<div class="success-action">✅ SO: {st.session_state.created_sos[order_number]}</div>', unsafe_allow_html=True)
                     else:
-                        action = st.selectbox(
-                            "Action",
-                            ["Select Action", "Create SO"],
-                            key=f"action_{idx}",
-                            label_visibility="collapsed"
-                        )
-                        if action == "Create SO":
-                            if st.button(f"Execute", key=f"execute_{idx}"):
-                                with st.spinner(f"Creating SO for Order {order_number}..."):
-                                    order_data = row.tolist()
-                                    # Use the editable delivery date if available, otherwise use original
-                                    if delivery_date is not None:
-                                        so_number = create_sales_order(order_data, delivery_date)
-                                    else:
-                                        so_number = create_sales_order(order_data, str(row.iloc[5]))
-                                    
-                                    if so_number:
-                                        st.session_state.created_sos[order_number] = so_number
-                                        st.success(f"✅ Created SO: {so_number}")
-                                        st.rerun()
-                                    else:
-                                        st.error("❌ Failed to create Sales Order")
+                        # Create container with blue background for action elements
+                        action_container = st.container()
+                        with action_container:
+                            st.markdown('<div class="action-column">', unsafe_allow_html=True)
+                            action = st.selectbox(
+                                "Action",
+                                ["Select Action", "Create SO"],
+                                key=f"action_{idx}",
+                                label_visibility="collapsed"
+                            )
+                            if action == "Create SO":
+                                if st.button(f"Execute", key=f"execute_{idx}"):
+                                    with st.spinner(f"Creating SO for Order {order_number}..."):
+                                        order_data = row.tolist()
+                                        # Use the editable delivery date if available, otherwise use original
+                                        if delivery_date is not None:
+                                            so_number = create_sales_order(order_data, delivery_date)
+                                        else:
+                                            so_number = create_sales_order(order_data, str(row.iloc[5]))
+                                        
+                                        if so_number:
+                                            st.session_state.created_sos[order_number] = so_number
+                                            st.success(f"✅ Created SO: {so_number}")
+                                            st.rerun()
+                                        else:
+                                            st.error("❌ Failed to create Sales Order")
+                            st.markdown('</div>', unsafe_allow_html=True)
             
             else:  # No Sales Order column (5 columns)
                 col1, col2, col3, col4, col5, col6, col7 = st.columns([0.5, 1.2, 1.2, 2, 1, 1.5, 1.5])
@@ -1243,25 +1288,30 @@ def main():
                 with col7:
                     order_number = str(row.iloc[0])
                     if order_number in st.session_state.created_sos:
-                        st.success(f"SO: {st.session_state.created_sos[order_number]}")
+                        st.markdown(f'<div class="success-action">✅ SO: {st.session_state.created_sos[order_number]}</div>', unsafe_allow_html=True)
                     else:
-                        action = st.selectbox(
-                            "Action",
-                            ["Select Action", "Create SO"],
-                            key=f"action_{idx}",
-                            label_visibility="collapsed"
-                        )
-                        if action == "Create SO":
-                            if st.button(f"Execute", key=f"execute_{idx}"):
-                                with st.spinner(f"Creating SO for Order {order_number}..."):
-                                    order_data = row.tolist()
-                                    so_number = create_sales_order(order_data, delivery_date)
-                                    if so_number:
-                                        st.session_state.created_sos[order_number] = so_number
-                                        st.success(f"✅ Created SO: {so_number}")
-                                        st.rerun()
-                                    else:
-                                        st.error("❌ Failed to create Sales Order")
+                        # Create container with blue background for action elements
+                        action_container = st.container()
+                        with action_container:
+                            st.markdown('<div class="action-column">', unsafe_allow_html=True)
+                            action = st.selectbox(
+                                "Action",
+                                ["Select Action", "Create SO"],
+                                key=f"action_{idx}",
+                                label_visibility="collapsed"
+                            )
+                            if action == "Create SO":
+                                if st.button(f"Execute", key=f"execute_{idx}"):
+                                    with st.spinner(f"Creating SO for Order {order_number}..."):
+                                        order_data = row.tolist()
+                                        so_number = create_sales_order(order_data, delivery_date)
+                                        if so_number:
+                                            st.session_state.created_sos[order_number] = so_number
+                                            st.success(f"✅ Created SO: {so_number}")
+                                            st.rerun()
+                                        else:
+                                            st.error("❌ Failed to create Sales Order")
+                            st.markdown('</div>', unsafe_allow_html=True)
             
             # Add subtle separator between rows
             if idx < len(st.session_state.orders_data) - 1:
@@ -1280,8 +1330,8 @@ def main():
         2. **Click 'Fetch Orders'** to retrieve orders from Swagelok portal
         3. **Review orders** in the main table
         4. **Adjust delivery dates** as needed (all dates are editable except "Delivered" orders)
-        5. **Select 'Create SO'** from action dropdown and click Execute
-        6. **Modified delivery dates** will be used when creating the Sales Order
+        5. **Look for blue action boxes** - Select 'Create SO' from dropdown and click Execute
+        6. **Modified delivery dates** (if needed) will be used when creating the Sales Order
         """)
 
 if __name__ == "__main__":
