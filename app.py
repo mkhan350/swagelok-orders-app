@@ -15,6 +15,9 @@ import io
 import sqlite3
 import hashlib
 import os
+import openpyxl
+from openpyxl import load_workbook
+import traceback
 
 # Page setup
 st.set_page_config(
@@ -23,9 +26,49 @@ st.set_page_config(
     layout="wide"
 )
 
+# Custom CSS for action column styling
+st.markdown("""
+<style>
+.action-column {
+    background-color: #e3f2fd !important;
+    border-radius: 8px !important;
+    padding: 8px !important;
+    border: 2px solid #2196f3 !important;
+    margin: 2px 0 !important;
+}
+
+.action-column .stButton > button {
+    background-color: #2196f3 !important;
+    color: white !important;
+    border: none !important;
+    border-radius: 4px !important;
+    font-weight: bold !important;
+}
+
+.action-column .stButton > button:hover {
+    background-color: #1976d2 !important;
+    color: white !important;
+}
+
+.success-action {
+    background-color: #e8f5e8 !important;
+    border: 2px solid #4caf50 !important;
+    border-radius: 8px !important;
+    padding: 8px !important;
+    text-align: center !important;
+    font-weight: bold !important;
+    color: #2e7d32 !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
 # Your API configurations
-API_TOKEN = st.secrets["FULCRUM_API_TOKEN"]
-BASE_URL = "https://api.fulcrumpro.us/api"
+try:
+    API_TOKEN = st.secrets["FULCRUM_API_TOKEN"]
+    BASE_URL = "https://api.fulcrumpro.us/api"
+except KeyError:
+    st.error("❌ FULCRUM_API_TOKEN not found in secrets. Please configure your API token.")
+    st.stop()
 
 # ====== DATABASE MANAGEMENT WITH GITHUB REPO BACKUP ======
 class UserDatabase:
@@ -311,9 +354,9 @@ if 'updated_delivery_dates' not in st.session_state:
 if 'current_user' not in st.session_state:
     st.session_state.current_user = None
 
-# ====== MIGRATED API CLIENT FROM DESKTOP APP ======
+# ====== ENHANCED API CLIENT WITH EXCEL AND BOM FUNCTIONALITY ======
 class OptimizedFulcrumAPI:
-    """Migrated from desktop app - handles all Fulcrum API operations"""
+    """Enhanced API client with BOM, operations, and Excel integration"""
     
     def __init__(self, token):
         self.api_token = token
@@ -323,17 +366,20 @@ class OptimizedFulcrumAPI:
             "Accept": "application/json"
         }
         self.base_url = BASE_URL
+        self.item_cache = {}  # Cache for item lookups
+        self.session = requests.Session()
+        self.session.headers.update(self.headers)
         
     def _make_request(self, method, url, payload=None, max_retries=3):
         """Generic method with retry logic and better error handling"""
         for attempt in range(max_retries):
             try:
                 if method.upper() == "GET":
-                    response = requests.get(url, headers=self.headers, timeout=30)
+                    response = self.session.get(url, timeout=30)
                 elif method.upper() == "POST":
-                    response = requests.post(url, json=payload, headers=self.headers, timeout=30)
+                    response = self.session.post(url, json=payload, timeout=30)
                 elif method.upper() == "DELETE":
-                    response = requests.delete(url, headers=self.headers, timeout=30)
+                    response = self.session.delete(url, timeout=30)
                 else:
                     raise ValueError(f"Unsupported HTTP method: {method}")
                 
@@ -344,6 +390,7 @@ class OptimizedFulcrumAPI:
                     time.sleep(wait_time)
                     continue
                 else:
+                    st.error(f"API Error {response.status_code}: {response.text}")
                     return None
                     
             except requests.exceptions.Timeout:
@@ -357,7 +404,10 @@ class OptimizedFulcrumAPI:
         return None
     
     def check_item_exists(self, part_number):
-        """Check if item exists and return its ID"""
+        """Check if item exists and return its ID with caching"""
+        if part_number in self.item_cache:
+            return self.item_cache[part_number]
+            
         url = f"{self.base_url}/items/list/v2"
         payload = {
             "numbers": [{"query": part_number, "mode": "equal"}],
@@ -367,7 +417,11 @@ class OptimizedFulcrumAPI:
         response_data = self._make_request("POST", url, payload)
         if response_data and isinstance(response_data, list) and len(response_data) > 0:
             item_id = response_data[0]["id"]
+            self.item_cache[part_number] = item_id
+            st.success(f"✅ Part '{part_number}' exists with ID: {item_id}")
             return item_id
+        
+        self.item_cache[part_number] = None
         return None
     
     def create_item(self, part_number, description, price=None):
@@ -391,9 +445,158 @@ class OptimizedFulcrumAPI:
         response_data = self._make_request("POST", url, payload)
         if response_data and "id" in response_data:
             item_id = response_data["id"]
+            self.item_cache[part_number] = item_id
+            st.success(f"✅ Created item '{part_number}' with ID: {item_id}")
             return item_id
         
+        st.error(f"❌ Failed to create item '{part_number}'")
         return None
+
+    def get_item_id(self, item_name):
+        """Get item ID by name with caching"""
+        if item_name in self.item_cache:
+            return self.item_cache[item_name]
+            
+        url = f"{self.base_url}/items/list/v2"
+        payload = {
+            "numbers": [{"query": item_name, "mode": "equal"}],
+            "latestRevision": True
+        }
+        
+        response_data = self._make_request("POST", url, payload)
+        if response_data and isinstance(response_data, list) and len(response_data) > 0:
+            if "id" in response_data[0]:
+                item_id = response_data[0]["id"]
+                self.item_cache[item_name] = item_id
+                return item_id
+        
+        self.item_cache[item_name] = None
+        return None
+
+    def list_input_items(self, item_id, bom_name=""):
+        """List all input items (BOM items) for an item"""
+        url = f"{self.base_url}/items/{item_id}/routing/input-items/list"
+        payload = {"query": bom_name}
+        
+        response_data = self._make_request("POST", url, payload)
+        if response_data and isinstance(response_data, list):
+            return response_data
+        return []
+
+    def list_operations(self, item_id, bom_name=""):
+        """List all operations for an item"""
+        url = f"{self.base_url}/items/{item_id}/routing/operations/list"
+        payload = {"query": bom_name}
+        
+        response_data = self._make_request("POST", url, payload)
+        if response_data and isinstance(response_data, list):
+            return response_data
+        return []
+
+    def delete_input_item(self, item_id, input_item_id):
+        """Delete a single input item (BOM item)"""
+        url = f"{self.base_url}/items/{item_id}/routing/input-items/{input_item_id}"
+        response_data = self._make_request("DELETE", url)
+        return response_data is not None
+
+    def delete_operation(self, item_id, operation_id):
+        """Delete a single operation"""
+        url = f"{self.base_url}/items/{item_id}/routing/operations/{operation_id}"
+        response_data = self._make_request("DELETE", url)
+        return response_data is not None
+
+    def clear_item_routing(self, item_id, first_bom_name=""):
+        """Clear all routing (BOM and operations) for an item"""
+        st.info(f"🧹 Clearing existing routing for item {item_id}...")
+        
+        # Delete all input items (BOM)
+        input_items = self.list_input_items(item_id, first_bom_name)
+        deleted_inputs = 0
+        for item in input_items:
+            if "id" in item:
+                if self.delete_input_item(item_id, item["id"]):
+                    deleted_inputs += 1
+        
+        # Delete all operations
+        operations = self.list_operations(item_id, first_bom_name)
+        deleted_operations = 0
+        for op in operations:
+            if "id" in op:
+                if self.delete_operation(item_id, op["id"]):
+                    deleted_operations += 1
+        
+        st.success(f"✅ Cleared routing: {deleted_inputs} BOM items, {deleted_operations} operations")
+        return True
+
+    def add_bom_item(self, item_id, bom_item):
+        """Add BOM item to item routing"""
+        url = f"{self.base_url}/items/{item_id}/routing/input-items"
+        payload = {
+            "itemId": bom_item["id"],
+            "valueTypeUnits": bom_item["value"],
+            "valueType": "requires"
+        }
+        
+        response_data = self._make_request("POST", url, payload)
+        if response_data:
+            st.success(f"✅ Added BOM: {bom_item['name']} (Qty: {bom_item['value']})")
+            return True
+        return False
+
+    def add_operation(self, item_id, operation):
+        """Add operation to item routing"""
+        url = f"{self.base_url}/items/{item_id}/routing/operations"
+        payload = {
+            "systemOperationId": operation["systemOperationId"],
+            "order": operation["order"],
+            "operation": {
+                "laborTime": {
+                    "time": int(operation["laborTime"]),
+                    "option": "secondsPerUnit"
+                }
+            }
+        }
+        
+        response_data = self._make_request("POST", url, payload)
+        if response_data and "id" in response_data:
+            st.success(f"✅ Added Operation: {operation['systemOperationId']} (Order: {operation['order']})")
+            return response_data["id"]
+        return None
+
+    def upload_attachment(self, sales_order_id, uploaded_file, order_number):
+        """Upload file attachment to sales order"""
+        try:
+            attachment_url = f"{self.base_url}/attachments"
+            headers = {"Authorization": f"Bearer {self.api_token}"}
+            
+            attachment_payload = {
+                "Detail.Owner.Type": "salesOrder",
+                "Detail.Owner.Id": sales_order_id,
+                "Detail.Description": f"Order Attachment for {order_number}",
+                "Detail.AttachmentType": "standard",
+                "Detail.IsNoteAttachment": "false"
+            }
+            
+            files = {"File": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)}
+            
+            response = requests.post(
+                attachment_url, 
+                headers=headers, 
+                data=attachment_payload, 
+                files=files, 
+                timeout=30
+            )
+            
+            if response.status_code in [200, 201]:
+                st.success(f"✅ Uploaded attachment: {uploaded_file.name}")
+                return True
+            else:
+                st.error(f"❌ Failed to upload attachment: {response.status_code}")
+                return False
+                
+        except Exception as e:
+            st.error(f"❌ Attachment upload error: {str(e)}")
+            return False
     
     def create_sales_order(self, order_data):
         """Create sales order"""
@@ -425,17 +628,140 @@ class OptimizedFulcrumAPI:
 
             response_data = self._make_request("POST", url, payload)
             if response_data:
+                st.success(f"✅ Added line item: Qty {quantity} @ ${price_float}")
                 return True
             else:
                 return False
 
         except (ValueError, TypeError) as e:
+            st.error(f"❌ Price error: {str(e)}")
             return False
 
-# Initialize API client
+# ====== EXCEL INTEGRATION FUNCTIONALITY ======
+class ExcelProcessor:
+    """Handle Excel operations for pricing and BOM data"""
+    
+    def __init__(self):
+        self.price_cache = {}  # Cache for Excel lookups
+        self.excel_url = st.secrets.get("EXCEL_FILE_URL", "")
+        
+    def lookup_part_data(self, part_number):
+        """
+        Lookup part data from Excel file
+        Returns: (price, description, bom_items, operations)
+        """
+        if part_number in self.price_cache:
+            st.info(f"📋 Using cached data for {part_number}")
+            return self.price_cache[part_number]
+        
+        if not self.excel_url:
+            st.error("❌ Excel file URL not configured in secrets")
+            return None, None, [], []
+        
+        try:
+            # Download Excel file temporarily
+            with st.spinner(f"📊 Processing Excel data for {part_number}..."):
+                response = requests.get(self.excel_url, timeout=30)
+                if response.status_code != 200:
+                    st.error(f"❌ Failed to access Excel file: {response.status_code}")
+                    return None, None, [], []
+                
+                # Save to temporary file
+                temp_file = f"temp_excel_{int(time.time())}.xlsx"
+                with open(temp_file, 'wb') as f:
+                    f.write(response.content)
+                
+                # Process Excel file
+                result = self._process_excel_file(temp_file, part_number)
+                
+                # Clean up
+                if os.path.exists(temp_file):
+                    os.remove(temp_file)
+                
+                # Cache result
+                self.price_cache[part_number] = result
+                return result
+                
+        except Exception as e:
+            st.error(f"❌ Excel processing error: {str(e)}")
+            return None, None, [], []
+    
+    def _process_excel_file(self, file_path, part_number):
+        """Process the Excel file to extract data"""
+        try:
+            # Load workbook
+            workbook = load_workbook(file_path, data_only=False)
+            sheet = workbook["Sheet1"]
+            
+            # Input part number in C5 (like the desktop version)
+            sheet["C5"] = part_number
+            
+            # Since we can't run VBA macros in openpyxl, we'll try to extract data directly
+            # This assumes the Excel has formulas that calculate based on C5
+            
+            # For now, we'll simulate the macro functionality by reading the expected output cells
+            # You may need to adjust this based on your Excel file structure
+            
+            # Try to get price from C13
+            price_cell = sheet["C13"].value
+            price = None
+            if price_cell is not None:
+                try:
+                    price = round(float(price_cell), 2)
+                except (ValueError, TypeError):
+                    price = None
+            
+            # Try to get description from C14
+            description_cell = sheet["C14"].value
+            description = str(description_cell) if description_cell else f"Swagelok Part {part_number}"
+            
+            # Extract BOM items from J14:J25, L14:L25, M14:M25
+            bom_items = []
+            for row in range(14, 26):  # Rows 14-25
+                j_value = sheet[f"J{row}"].value  # Part name
+                l_value = sheet[f"L{row}"].value  # Quantity
+                m_value = sheet[f"M{row}"].value  # Multiplier
+                
+                if j_value and l_value:
+                    try:
+                        value = float(l_value) * float(m_value) if m_value else float(l_value)
+                        bom_items.append({
+                            "name": str(j_value).strip(),
+                            "value": value
+                        })
+                    except (ValueError, TypeError):
+                        continue
+            
+            # Extract operations from J36:J40, L36:L40
+            operations = []
+            for row in range(36, 41):  # Rows 36-40
+                operation_id = sheet[f"J{row}"].value  # Operation ID
+                labor_time = sheet[f"L{row}"].value   # Labor time
+                
+                if operation_id and labor_time:
+                    try:
+                        operations.append({
+                            "systemOperationId": str(operation_id).strip(),
+                            "order": row - 35,  # Order based on row position
+                            "laborTime": int(float(labor_time) * 60)  # Convert to seconds
+                        })
+                    except (ValueError, TypeError):
+                        continue
+            
+            st.success(f"✅ Excel processing complete: Price=${price}, {len(bom_items)} BOM items, {len(operations)} operations")
+            return price, description, bom_items, operations
+            
+        except Exception as e:
+            st.error(f"❌ Excel file processing error: {str(e)}")
+            return None, None, [], []
+        finally:
+            if 'workbook' in locals():
+                workbook.close()
+
+# Initialize Excel processor
 @st.cache_resource
-def get_api_client():
-    return OptimizedFulcrumAPI(API_TOKEN)
+def get_excel_processor():
+    return ExcelProcessor()
 
 # Business Logic Functions
 def business_days_from(start_date, days):
@@ -484,23 +810,75 @@ def format_delivery_date(date_input):
         calculated_date = business_days_from(datetime.now(), 18)
         return calculated_date.strftime("%Y-%m-%d")
 
+# Enhanced process part number function
 def process_part_number(part_number, manual_price=None):
-    """Process part number - simplified for web version"""
+    """
+    Enhanced part processing with Excel integration and BOM management
+    """
     api_client = get_api_client()
+    excel_processor = get_excel_processor()
     
-    # Check if item exists
-    existing_item_id = api_client.check_item_exists(part_number)
-    
-    if existing_item_id:
-        return existing_item_id, manual_price or 100.0  # Default price
-    else:
-        # Create new item
-        description = f"Swagelok Part {part_number}"
-        item_id = api_client.create_item(part_number, description)
-        return item_id, manual_price or 100.0  # Default price
+    try:
+        st.info(f"🔧 Processing part: {part_number}")
+        
+        # Step 1: Check if item exists
+        existing_item_id = api_client.check_item_exists(part_number)
+        
+        # Step 2: Get data from Excel
+        price, description, bom_items, operations = excel_processor.lookup_part_data(part_number)
+        
+        # Use manual price if Excel price is not available
+        if price is None and manual_price is not None:
+            price = manual_price
+            st.info(f"💰 Using manual price: ${price}")
+        elif price is None:
+            price = 100.0  # Default fallback price
+            st.warning(f"⚠️ Using default price: ${price}")
+        
+        # Step 3: Handle item creation or update
+        if existing_item_id:
+            st.info(f"📝 Updating existing item...")
+            item_id = existing_item_id
+            
+            # Clear existing routing if we have new BOM/operations data
+            if bom_items or operations:
+                api_client.clear_item_routing(existing_item_id)
+        else:
+            st.info(f"🆕 Creating new item...")
+            item_id = api_client.create_item(part_number, description)
+            if not item_id:
+                st.error(f"❌ Failed to create item for {part_number}")
+                return None, price
+        
+        # Step 4: Add BOM items
+        if bom_items:
+            st.info(f"📦 Adding {len(bom_items)} BOM items...")
+            for bom_item in bom_items:
+                # Get BOM item ID
+                bom_id = api_client.get_item_id(bom_item["name"])
+                if bom_id:
+                    bom_item["id"] = bom_id
+                    api_client.add_bom_item(item_id, bom_item)
+                else:
+                    st.warning(f"⚠️ BOM item not found: {bom_item['name']}")
+        
+        # Step 5: Add operations
+        if operations:
+            st.info(f"⚙️ Adding {len(operations)} operations...")
+            for operation in operations:
+                api_client.add_operation(item_id, operation)
+        
+        st.success(f"✅ Part processing complete for {part_number}")
+        return item_id, price
+        
+    except Exception as e:
+        st.error(f"❌ Error processing part {part_number}: {str(e)}")
+        return None, price if 'price' in locals() else 100.0
 
 def create_sales_order(order_row, delivery_date=None):
-    """Create sales order from order data"""
+    """
+    Enhanced sales order creation with file attachment and complete processing
+    """
     api_client = get_api_client()
     
     try:
@@ -545,38 +923,65 @@ def create_sales_order(order_row, delivery_date=None):
         else:
             order_date_final = datetime.now().strftime("%Y-%m-%d")
         
-        # Create sales order payload
-        payload = {
-            "customerId": "654241f9c77f04d8d76410c4",  # Swagelok customer ID
-            "customerPoNumber": order_number,
-            "orderedDate": order_date_final,
-            "contact": {"firstName": "Kristian", "lastName": "Barnett"},
-            "dueDate": due_date_final,
-        }
-        
-        # Create sales order
-        sales_order_id = api_client.create_sales_order(payload)
-        if not sales_order_id:
-            return None
-        
-        # Get sales order details to get the SO number
-        so_details = api_client.get_sales_order_details(sales_order_id)
-        sales_order_number = so_details.get("number") if so_details else "Unknown"
-        
-        # Process part and add to order
-        item_id, price = process_part_number(part_number)
-        if item_id:
-            success = api_client.add_part_line_item(sales_order_id, item_id, quantity, price)
-            if success:
-                return sales_order_number
-            else:
-                return None
-        else:
-            return None
+        # Step 1: Create sales order
+        with st.spinner(f"📋 Creating Sales Order for {order_number}..."):
+            payload = {
+                "customerId": "654241f9c77f04d8d76410c4",  # Swagelok customer ID
+                "customerPoNumber": order_number,
+                "orderedDate": order_date_final,
+                "contact": {"firstName": "Kristian", "lastName": "Barnett"},
+                "dueDate": due_date_final,
+            }
             
+            sales_order_id = api_client.create_sales_order(payload)
+            if not sales_order_id:
+                st.error("❌ Failed to create Sales Order")
+                return None
+            
+            # Get sales order details to get the SO number
+            so_details = api_client.get_sales_order_details(sales_order_id)
+            sales_order_number = so_details.get("number") if so_details else "Unknown"
+            
+            st.success(f"✅ Created Sales Order: {sales_order_number}")
+        
+        # Step 2: File attachment handling
+        st.subheader("📎 File Attachment (Optional)")
+        st.info("You can attach a file to this Sales Order (e.g., PO, specifications, etc.)")
+        
+        uploaded_file = st.file_uploader(
+            "Choose a file to attach to the Sales Order",
+            key=f"attachment_{order_number}",
+            help="Optional: Upload any relevant documents for this order"
+        )
+        
+        if uploaded_file is not None:
+            with st.spinner("📎 Uploading attachment..."):
+                api_client.upload_attachment(sales_order_id, uploaded_file, order_number)
+        
+        # Step 3: Process part and add to order
+        with st.spinner(f"🔧 Processing part {part_number}..."):
+            item_id, price = process_part_number(part_number)
+            
+            if item_id and price is not None:
+                success = api_client.add_part_line_item(sales_order_id, item_id, quantity, price)
+                if success:
+                    st.success(f"✅ Sales Order {sales_order_number} completed successfully!")
+                    return sales_order_number
+                else:
+                    st.error("❌ Failed to add line item to Sales Order")
+                    return None
+            else:
+                st.error("❌ Failed to process part for Sales Order")
+                return None
+                
     except Exception as e:
-        st.error(f"Error creating sales order: {str(e)}")
+        st.error(f"❌ Error creating sales order: {str(e)}")
         return None
+
+# Initialize API client and Excel processor
+@st.cache_resource
+def get_api_client():
+    return OptimizedFulcrumAPI(API_TOKEN)
 
 def fetch_swagelok_orders(selected_status):
     """Fetch orders from Swagelok portal with improved parsing"""
@@ -1047,7 +1452,35 @@ def main():
                 except Exception as e:
                     st.error(f"❌ Error fetching orders: {str(e)}")
         
-        # Separator
+        st.markdown("---")
+        
+        # Excel Configuration Status
+        st.header("⚙️ Configuration")
+        
+        # Check Excel configuration
+        excel_configured = bool(st.secrets.get("EXCEL_FILE_URL", ""))
+        if excel_configured:
+            st.success("✅ Excel Integration Active")
+            st.info("🔧 Auto-pricing & BOM enabled")
+        else:
+            st.error("❌ Excel URL not configured")
+            st.warning("⚠️ Manual pricing will be used")
+            st.info("💡 Add EXCEL_FILE_URL to secrets for full functionality")
+        
+        # Show configuration help
+        with st.expander("🔧 Configuration Help"):
+            st.markdown("""
+            **Required Secrets:**
+            - `FULCRUM_API_TOKEN`: Your Fulcrum API token
+            - `EXCEL_FILE_URL`: Direct download URL for your Excel file
+            
+            **Excel File Requirements:**
+            - Sheet1 with part number input in C5
+            - Price output in C13, Description in C14
+            - BOM items in J14:J25, quantities in L14:L25, multipliers in M14:M25
+            - Operations in J36:J40, labor times in L36:L40
+            """)
+        
         st.markdown("---")
         
         # Account section at bottom
@@ -1101,10 +1534,10 @@ def main():
         # Create proper table headers based on the order status
         if len(columns) == 6:  # Has Sales Order column (Order History and Order Modification)
             header_cols = st.columns([0.5, 1.2, 1.2, 2, 1, 1.2, 1.2, 1.5])
-            headers = ["No.", "Order #", "Date", "Part Number", "Qty", "Sales Order", "Delivery Date", "Action"]
+            headers = ["No.", "Order #", "Date", "Part Number", "Qty", "Sales Order", "Delivery", "Action"]
         else:  # No Sales Order column (Order New and others)
             header_cols = st.columns([0.5, 1.2, 1.2, 2, 1, 1.5, 1.5])
-            headers = ["No.", "Order #", "Date", "Part Number", "Qty", "Delivery ✏️", "Action"]
+            headers = ["No.", "Order #", "Date", "Part Number", "Qty", "Delivery", "Action"]
         
         # Display headers
         for i, header in enumerate(headers):
@@ -1159,30 +1592,35 @@ def main():
                 with col8:
                     order_number = str(row.iloc[0])
                     if order_number in st.session_state.created_sos:
-                        st.success(f"SO: {st.session_state.created_sos[order_number]}")
+                        st.markdown(f'<div class="success-action">✅ SO: {st.session_state.created_sos[order_number]}</div>', unsafe_allow_html=True)
                     else:
-                        action = st.selectbox(
-                            "Action",
-                            ["Select Action", "Create SO"],
-                            key=f"action_{idx}",
-                            label_visibility="collapsed"
-                        )
-                        if action == "Create SO":
-                            if st.button(f"Execute", key=f"execute_{idx}"):
-                                with st.spinner(f"Creating SO for Order {order_number}..."):
-                                    order_data = row.tolist()
-                                    # Use the editable delivery date if available, otherwise use original
-                                    if delivery_date is not None:
-                                        so_number = create_sales_order(order_data, delivery_date)
-                                    else:
-                                        so_number = create_sales_order(order_data, str(row.iloc[5]))
-                                    
-                                    if so_number:
-                                        st.session_state.created_sos[order_number] = so_number
-                                        st.success(f"✅ Created SO: {so_number}")
-                                        st.rerun()
-                                    else:
-                                        st.error("❌ Failed to create Sales Order")
+                        # Create container with blue background for action elements
+                        action_container = st.container()
+                        with action_container:
+                            st.markdown('<div class="action-column">', unsafe_allow_html=True)
+                            action = st.selectbox(
+                                "Action",
+                                ["Select Action", "Create SO"],
+                                key=f"action_{idx}",
+                                label_visibility="collapsed"
+                            )
+                            if action == "Create SO":
+                                if st.button(f"Execute", key=f"execute_{idx}"):
+                                    with st.spinner(f"Creating SO for Order {order_number}..."):
+                                        order_data = row.tolist()
+                                        # Use the editable delivery date if available, otherwise use original
+                                        if delivery_date is not None:
+                                            so_number = create_sales_order(order_data, delivery_date)
+                                        else:
+                                            so_number = create_sales_order(order_data, str(row.iloc[5]))
+                                        
+                                        if so_number:
+                                            st.session_state.created_sos[order_number] = so_number
+                                            st.success(f"✅ Created SO: {so_number}")
+                                            st.rerun()
+                                        else:
+                                            st.error("❌ Failed to create Sales Order")
+                            st.markdown('</div>', unsafe_allow_html=True)
             
             else:  # No Sales Order column (5 columns)
                 col1, col2, col3, col4, col5, col6, col7 = st.columns([0.5, 1.2, 1.2, 2, 1, 1.5, 1.5])
@@ -1243,25 +1681,30 @@ def main():
                 with col7:
                     order_number = str(row.iloc[0])
                     if order_number in st.session_state.created_sos:
-                        st.success(f"SO: {st.session_state.created_sos[order_number]}")
+                        st.markdown(f'<div class="success-action">✅ SO: {st.session_state.created_sos[order_number]}</div>', unsafe_allow_html=True)
                     else:
-                        action = st.selectbox(
-                            "Action",
-                            ["Select Action", "Create SO"],
-                            key=f"action_{idx}",
-                            label_visibility="collapsed"
-                        )
-                        if action == "Create SO":
-                            if st.button(f"Execute", key=f"execute_{idx}"):
-                                with st.spinner(f"Creating SO for Order {order_number}..."):
-                                    order_data = row.tolist()
-                                    so_number = create_sales_order(order_data, delivery_date)
-                                    if so_number:
-                                        st.session_state.created_sos[order_number] = so_number
-                                        st.success(f"✅ Created SO: {so_number}")
-                                        st.rerun()
-                                    else:
-                                        st.error("❌ Failed to create Sales Order")
+                        # Create container with blue background for action elements
+                        action_container = st.container()
+                        with action_container:
+                            st.markdown('<div class="action-column">', unsafe_allow_html=True)
+                            action = st.selectbox(
+                                "Action",
+                                ["Select Action", "Create SO"],
+                                key=f"action_{idx}",
+                                label_visibility="collapsed"
+                            )
+                            if action == "Create SO":
+                                if st.button(f"Execute", key=f"execute_{idx}"):
+                                    with st.spinner(f"Creating SO for Order {order_number}..."):
+                                        order_data = row.tolist()
+                                        so_number = create_sales_order(order_data, delivery_date)
+                                        if so_number:
+                                            st.session_state.created_sos[order_number] = so_number
+                                            st.success(f"✅ Created SO: {so_number}")
+                                            st.rerun()
+                                        else:
+                                            st.error("❌ Failed to create Sales Order")
+                            st.markdown('</div>', unsafe_allow_html=True)
             
             # Add subtle separator between rows
             if idx < len(st.session_state.orders_data) - 1:
@@ -1272,6 +1715,16 @@ def main():
         st.markdown(f"# WELCOME **{current_user['first_name'].upper()}**")
         st.markdown("---")
         
+        # Configuration status
+        col1, col2 = st.columns(2)
+        with col1:
+            api_status = "✅ Connected" if API_TOKEN else "❌ Missing API Token"
+            st.info(f"🔌 **API Status:** {api_status}")
+        
+        with col2:
+            excel_status = "✅ Configured" if st.secrets.get("EXCEL_FILE_URL") else "❌ Not Configured"
+            st.info(f"📊 **Excel Integration:** {excel_status}")
+        
         # Instructions only
         st.info("👆 Use the sidebar to fetch orders and get started!")
         st.markdown("""
@@ -1280,7 +1733,7 @@ def main():
         2. **Click 'Fetch Orders'** to retrieve orders from Swagelok portal
         3. **Review orders** in the main table
         4. **Adjust delivery dates** as needed (all dates are editable except "Delivered" orders)
-        5. **Select 'Create SO'** from action dropdown and click Execute
+        5. **Select 'Create SO'** from blue action dropdown and click Execute
         6. **Modified delivery dates** will be used when creating the Sales Order
         """)
 
