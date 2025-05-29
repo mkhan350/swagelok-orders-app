@@ -34,18 +34,46 @@ st.markdown("""
     margin: 2px 0 !important;
 }
 
-.action-column .stSelectbox > div > div {
+/* Target the selectbox dropdown */
+.action-column .stSelectbox > div:first-child > div:first-child {
     background-color: #2196f3 !important;
     color: white !important;
-    border-radius: 4px !important;
+    border: 1px solid #2196f3 !important;
 }
 
-.action-column .stSelectbox > div > div > div {
+.action-column .stSelectbox > div:first-child > div:first-child:hover {
+    background-color: #1976d2 !important;
+    border: 1px solid #1976d2 !important;
+}
+
+/* Target the selectbox text */
+.action-column .stSelectbox > div:first-child > div:first-child > div {
     color: white !important;
 }
 
-.action-column .stSelectbox {
+/* Target the dropdown arrow */
+.action-column .stSelectbox > div:first-child > div:first-child svg {
+    fill: white !important;
+}
+
+/* Alternative targeting for selectbox */
+.action-column [data-testid="stSelectbox"] > div > div {
     background-color: #2196f3 !important;
+    color: white !important;
+    border: 1px solid #2196f3 !important;
+}
+
+.action-column [data-testid="stSelectbox"] > div > div:hover {
+    background-color: #1976d2 !important;
+    border: 1px solid #1976d2 !important;
+}
+
+.action-column [data-testid="stSelectbox"] > div > div > div {
+    color: white !important;
+}
+
+.action-column [data-testid="stSelectbox"] svg {
+    fill: white !important;
 }
 
 .action-column .stButton > button {
