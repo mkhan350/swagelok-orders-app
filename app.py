@@ -832,87 +832,164 @@ def main():
     
     # Main content area
     if st.session_state.orders_data is not None:
-        # Orders fetched - show orders table with inline actions
+        # Orders fetched - show orders table with proper headers
         st.header("Open Orders")
         st.write(f"**Found {len(st.session_state.orders_data)} orders:**")
         
-        # Create table with inline action buttons
+        # Get column names from the DataFrame
+        columns = st.session_state.orders_data.columns.tolist()
+        
+        # Create proper table headers
+        if len(columns) == 6:  # Order History format
+            header_cols = st.columns([0.5, 1.2, 1.2, 2, 1, 1.2, 1.5])
+            headers = ["No.", "Order #", "Date", "Part Number", "Qty", "Sales Order", "Action"]
+        elif len(columns) == 5:  # New orders and Modification format  
+            header_cols = st.columns([0.5, 1.2, 1.2, 2, 1, 1.5, 1.5])
+            headers = ["No.", "Order #", "Date", "Part Number", "Qty", "Delivery", "Action"]
+        else:  # Other formats (4 columns)
+            header_cols = st.columns([0.5, 1.2, 1.2, 2, 1, 1.5])
+            headers = ["No.", "Order #", "Date", "Part Number", "Qty", "Action"]
+        
+        # Display headers
+        for i, header in enumerate(headers):
+            with header_cols[i]:
+                st.markdown(f"**{header}**")
+        
+        st.markdown("---")  # Separator line
+        
+        # Display data rows
         for idx, row in st.session_state.orders_data.iterrows():
-            # Create columns for each row
-            col1, col2, col3, col4, col5, col6, col7 = st.columns([0.5, 1.5, 1.5, 2, 1, 1.5, 1.5])
-            
-            with col1:
-                st.write(f"**{idx + 1}.**")
-            
-            with col2:
-                st.write(f"**{row.iloc[0]}**")  # Order Number
-                st.caption("Order #")
-            
-            with col3:
-                st.write(f"{row.iloc[1]}")  # Order Date
-                st.caption("Date")
-            
-            with col4:
-                st.write(f"**{row.iloc[2]}**")  # Part Number
-                st.caption("Part Number")
-            
-            with col5:
-                st.write(f"{row.iloc[3]}")  # Quantity
-                st.caption("Qty")
-            
-            with col6:
-                if len(row) > 4:
-                    # Delivery date picker for orders that have delivery date
-                    default_date = datetime.strptime(row.iloc[4], "%m/%d/%Y").date()
-                    delivery_date = st.date_input(
-                        "Delivery",
-                        value=default_date,
-                        key=f"delivery_{idx}",
-                        label_visibility="collapsed"
-                    )
-                    st.caption("Delivery Date")
-                else:
-                    # Default delivery date for orders without it
-                    default_date = business_days_from(datetime.now(), 18).date()
-                    delivery_date = st.date_input(
-                        "Delivery",
-                        value=default_date,
-                        key=f"delivery_{idx}",
-                        label_visibility="collapsed"
-                    )
-                    st.caption("Delivery Date")
-            
-            with col7:
-                order_number = row.iloc[0]
+            if len(columns) == 6:  # Order History format
+                col1, col2, col3, col4, col5, col6, col7 = st.columns([0.5, 1.2, 1.2, 2, 1, 1.2, 1.5])
                 
-                if order_number in st.session_state.created_sos:
-                    st.success(f"SO: {st.session_state.created_sos[order_number]}")
-                else:
-                    # Action dropdown
-                    action = st.selectbox(
-                        "Action",
-                        ["Select Action", "Create SO"],
-                        key=f"action_{idx}",
+                with col1:
+                    st.write(f"{idx + 1}")
+                with col2:
+                    st.write(f"{row.iloc[0]}")  # Order Number
+                with col3:
+                    st.write(f"{row.iloc[1]}")  # Order Date
+                with col4:
+                    st.write(f"{row.iloc[2]}")  # Part Number
+                with col5:
+                    st.write(f"{row.iloc[3]}")  # Quantity
+                with col6:
+                    st.write(f"{row.iloc[4]}")  # Sales Order
+                with col7:
+                    order_number = row.iloc[0]
+                    if order_number in st.session_state.created_sos:
+                        st.success(f"SO: {st.session_state.created_sos[order_number]}")
+                    else:
+                        action = st.selectbox(
+                            "Action",
+                            ["Select Action", "Create SO"],
+                            key=f"action_{idx}",
+                            label_visibility="collapsed"
+                        )
+                        if action == "Create SO":
+                            if st.button(f"Execute", key=f"execute_{idx}"):
+                                with st.spinner(f"Creating SO for Order {order_number}..."):
+                                    order_data = row.tolist()
+                                    # Use delivery date from the data (position 5 in Order History)
+                                    try:
+                                        delivery_date_str = row.iloc[5]
+                                        # Try to parse and format the date
+                                        if "/" in delivery_date_str:
+                                            parsed_date = datetime.strptime(delivery_date_str, "%m/%d/%Y")
+                                            delivery_date = parsed_date.strftime("%Y-%m-%d")
+                                        else:
+                                            delivery_date = delivery_date_str
+                                    except:
+                                        delivery_date = business_days_from(datetime.now(), 18).strftime("%Y-%m-%d")
+                                    
+                                    so_number = create_sales_order(order_data, delivery_date)
+                                    if so_number:
+                                        st.session_state.created_sos[order_number] = so_number
+                                        st.experimental_rerun()
+            
+            elif len(columns) == 5:  # New orders and Modification format
+                col1, col2, col3, col4, col5, col6, col7 = st.columns([0.5, 1.2, 1.2, 2, 1, 1.5, 1.5])
+                
+                with col1:
+                    st.write(f"{idx + 1}")
+                with col2:
+                    st.write(f"{row.iloc[0]}")  # Order Number
+                with col3:
+                    st.write(f"{row.iloc[1]}")  # Order Date
+                with col4:
+                    st.write(f"{row.iloc[2]}")  # Part Number
+                with col5:
+                    st.write(f"{row.iloc[3]}")  # Quantity
+                with col6:
+                    # Delivery date picker
+                    try:
+                        default_date = datetime.strptime(row.iloc[4], "%m/%d/%Y").date()
+                    except:
+                        # If date parsing fails, use business days from now
+                        default_date = business_days_from(datetime.now(), 18).date()
+                    
+                    delivery_date = st.date_input(
+                        "Delivery",
+                        value=default_date,
+                        key=f"delivery_{idx}",
                         label_visibility="collapsed"
                     )
-                    
-                    if action == "Create SO":
-                        if st.button(f"Execute", key=f"execute_{idx}"):
-                            with st.spinner(f"Creating SO for Order {order_number}..."):
-                                # Get price - default to 100.0 for now
-                                manual_price = 100.0
-                                
-                                # Convert row to list
-                                order_data = row.tolist()
-                                
-                                # Create sales order
-                                so_number = create_sales_order(order_data, delivery_date.strftime("%Y-%m-%d"))
-                                if so_number:
-                                    st.session_state.created_sos[order_number] = so_number
-                                    st.experimental_rerun()
+                with col7:
+                    order_number = row.iloc[0]
+                    if order_number in st.session_state.created_sos:
+                        st.success(f"SO: {st.session_state.created_sos[order_number]}")
+                    else:
+                        action = st.selectbox(
+                            "Action",
+                            ["Select Action", "Create SO"],
+                            key=f"action_{idx}",
+                            label_visibility="collapsed"
+                        )
+                        if action == "Create SO":
+                            if st.button(f"Execute", key=f"execute_{idx}"):
+                                with st.spinner(f"Creating SO for Order {order_number}..."):
+                                    order_data = row.tolist()
+                                    so_number = create_sales_order(order_data, delivery_date.strftime("%Y-%m-%d"))
+                                    if so_number:
+                                        st.session_state.created_sos[order_number] = so_number
+                                        st.experimental_rerun()
             
-            # Add separator line
-            st.markdown("---")
+            else:  # Other formats
+                col1, col2, col3, col4, col5, col6 = st.columns([0.5, 1.2, 1.2, 2, 1, 1.5])
+                
+                with col1:
+                    st.write(f"{idx + 1}")
+                with col2:
+                    st.write(f"{row.iloc[0]}")  # Order Number
+                with col3:
+                    st.write(f"{row.iloc[1]}")  # Order Date
+                with col4:
+                    st.write(f"{row.iloc[2]}")  # Part Number
+                with col5:
+                    st.write(f"{row.iloc[3]}")  # Quantity
+                with col6:
+                    order_number = row.iloc[0]
+                    if order_number in st.session_state.created_sos:
+                        st.success(f"SO: {st.session_state.created_sos[order_number]}")
+                    else:
+                        action = st.selectbox(
+                            "Action",
+                            ["Select Action", "Create SO"],
+                            key=f"action_{idx}",
+                            label_visibility="collapsed"
+                        )
+                        if action == "Create SO":
+                            if st.button(f"Execute", key=f"execute_{idx}"):
+                                with st.spinner(f"Creating SO for Order {order_number}..."):
+                                    order_data = row.tolist()
+                                    default_date = business_days_from(datetime.now(), 18).strftime("%Y-%m-%d")
+                                    so_number = create_sales_order(order_data, default_date)
+                                    if so_number:
+                                        st.session_state.created_sos[order_number] = so_number
+                                        st.experimental_rerun()
+            
+            # Add subtle separator between rows
+            if idx < len(st.session_state.orders_data) - 1:
+                st.markdown('<hr style="margin: 0.5rem 0; border: none; border-top: 1px solid #e0e0e0;">', unsafe_allow_html=True)
     
     else:
         # Welcome screen
@@ -926,7 +1003,7 @@ def main():
         1. **Select Order Status** from the dropdown in the sidebar
         2. **Click 'Fetch Orders'** to retrieve orders from Swagelok portal
         3. **Review orders** in the main table
-        4. **Adjust delivery dates** as needed
+        4. **Adjust delivery dates** as needed (for applicable order types)
         5. **Select 'Create SO'** from action dropdown and click Execute
         """)
 
@@ -954,7 +1031,7 @@ def test_api_connection():
 def fetch_swagelok_orders(selected_status):
     """Fetch orders from Swagelok portal using Selenium"""
     
-    # Setup Chrome options for cloud deployment with Chromium
+    # Setup Chrome options for better stability
     options = Options()
     options.add_argument('--headless=new')
     options.add_argument('--no-sandbox')
@@ -964,6 +1041,13 @@ def fetch_swagelok_orders(selected_status):
     options.add_argument('--window-size=1920,1080')
     options.add_argument('--disable-blink-features=AutomationControlled')
     options.add_argument('--remote-debugging-port=9222')
+    options.add_argument('--disable-web-security')
+    options.add_argument('--disable-features=VizDisplayCompositor')
+    options.add_argument('--disable-background-timer-throttling')
+    options.add_argument('--disable-backgrounding-occluded-windows')
+    options.add_argument('--disable-renderer-backgrounding')
+    options.add_argument('--single-process')  # Additional stability
+    options.add_argument('--disable-background-networking')
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option('useAutomationExtension', False)
     
@@ -982,7 +1066,8 @@ def fetch_swagelok_orders(selected_status):
             service = Service(ChromeDriverManager().install())
             driver = webdriver.Chrome(service=service, options=options)
             
-        wait = WebDriverWait(driver, 15)
+        # Set longer timeout for stability
+        wait = WebDriverWait(driver, 20)
         
         # Navigate to Swagelok login
         driver.get("https://supplierportal.swagelok.com//login.aspx")
@@ -1021,7 +1106,7 @@ def fetch_swagelok_orders(selected_status):
         search_button = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_btnSearch")))
         search_button.click()
 
-        # Extract order data
+        # Extract order data with improved parsing
         data = []
         row_index = 1
         max_iterations = 100  # Limit for cloud deployment
@@ -1034,7 +1119,20 @@ def fetch_swagelok_orders(selected_status):
                 order_details_text = order_details_element.text
                 details = order_details_text.split()
                 
-                if selected_status in ["Order - New, Requires Supplier Action", "Order - History"]:
+                # Handle different order status formats
+                if selected_status == "Order - History":
+                    # Order History format: Order#, Order Date, Part#, Qty, Sales Order, Delivery Date
+                    if len(details) >= 6:
+                        order_number = details[0]
+                        order_date = details[1]  # Different position for Order History
+                        part_number = details[2]
+                        quantity = details[3]
+                        sales_order = details[4]
+                        delivery_date = details[5]
+                        data.append([order_number, order_date, part_number, quantity, sales_order, delivery_date])
+                
+                elif selected_status in ["Order - New, Requires Supplier Action"]:
+                    # New orders format: Order#, Order Date, Part#, Qty, Delivery Date
                     if len(details) >= 8:
                         order_number = details[0]
                         order_date = details[4]
@@ -1042,7 +1140,19 @@ def fetch_swagelok_orders(selected_status):
                         quantity = details[6]
                         delivery_date = details[7]
                         data.append([order_number, order_date, part_number, quantity, delivery_date])
+                
+                elif selected_status in ["Order - Modification, Requires Supplier Action"]:
+                    # Modification orders format: Similar to new orders
+                    if len(details) >= 8:
+                        order_number = details[0]
+                        order_date = details[4]
+                        part_number = details[5]
+                        quantity = details[6]
+                        delivery_date = details[7]
+                        data.append([order_number, order_date, part_number, quantity, delivery_date])
+                        
                 else:
+                    # Other formats (Ack - Sent, Ack - Accepted): Order#, Order Date, Part#, Qty
                     if len(details) >= 10:
                         order_number = details[0]
                         order_date = details[7]
@@ -1052,11 +1162,21 @@ def fetch_swagelok_orders(selected_status):
 
                 row_index += 1
                 
-            except:
-                break  # No more rows found
+            except Exception as e:
+                # If no more rows, timeout, or DevTools error, break gracefully
+                error_str = str(e).lower()
+                if any(x in error_str for x in ["timeout", "no such element", "devtools", "disconnected"]):
+                    break
+                else:
+                    st.warning(f"Error parsing row {row_index}: {str(e)}")
+                    row_index += 1
+                    if row_index > max_iterations:
+                        break
 
-        # Return headers and data
-        if selected_status in ["Order - New, Requires Supplier Action", "Order - History"]:
+        # Return appropriate headers and data based on order status
+        if selected_status == "Order - History":
+            return ["Order Number", "Order Date", "Part Number", "Quantity", "Sales Order", "Delivery Date"], data
+        elif selected_status in ["Order - New, Requires Supplier Action", "Order - Modification, Requires Supplier Action"]:
             return ["Order Number", "Order Date", "Part Number", "Quantity", "Delivery Date"], data
         else:
             return ["Order Number", "Order Date", "Part Number", "Quantity"], data
@@ -1064,11 +1184,24 @@ def fetch_swagelok_orders(selected_status):
     except Exception as e:
         error_msg = f"Scraping error: {str(e)}"
         st.error(error_msg)
+        
+        # More robust driver cleanup on error
+        if driver:
+            try:
+                driver.quit()
+            except Exception as quit_error:
+                # Ignore driver quit errors as they're common with DevTools issues
+                pass
+        
         return [], []
         
     finally:
         if driver:
-            driver.quit()
+            try:
+                driver.quit() 
+            except Exception as quit_error:
+                # Ignore driver quit errors
+                pass
 
 if __name__ == "__main__":
     main()
