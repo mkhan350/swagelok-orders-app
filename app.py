@@ -123,11 +123,9 @@ class UserDatabase:
             conn.commit()
             conn.close()
             
-            st.success(f"✅ Loaded {len(backup_data['users'])} users from repo backup!")
             return True
             
         except Exception as e:
-            st.error(f"Failed to load from repo backup: {str(e)}")
             return False
     
     def create_repo_backup(self):
@@ -166,7 +164,6 @@ class UserDatabase:
             return backup_data
             
         except Exception as e:
-            st.error(f"Backup creation failed: {str(e)}")
             return None
     
     def get_backup_download(self):
@@ -297,24 +294,7 @@ class UserDatabase:
             return users
             
         except Exception as e:
-            st.error(f"Database error: {str(e)}")
             return []
-    
-    def get_backup_status(self):
-        """Get status of repo backup file"""
-        if os.path.exists(self.repo_backup_path):
-            try:
-                with open(self.repo_backup_path, 'r') as f:
-                    backup_data = json.load(f)
-                
-                backup_time = backup_data.get("backup_timestamp", "Unknown")
-                user_count = len(backup_data.get("users", []))
-                
-                return True, f"✅ {user_count} users, updated: {backup_time[:19]}"
-            except:
-                return False, "⚠️ Backup file corrupted"
-        else:
-            return False, "❌ No backup file found"
 
 # Initialize database
 @st.cache_resource
@@ -361,19 +341,15 @@ class OptimizedFulcrumAPI:
                     return response.json() if response.content else {}
                 elif response.status_code == 429:  # Rate limit
                     wait_time = 2 ** attempt
-                    st.info(f"Rate limited. Waiting {wait_time} seconds...")
                     time.sleep(wait_time)
                     continue
                 else:
-                    st.error(f"API Error {response.status_code}: {response.text}")
                     return None
                     
             except requests.exceptions.Timeout:
-                st.error(f"Request timeout on attempt {attempt + 1}")
                 if attempt == max_retries - 1:
                     return None
             except requests.exceptions.RequestException as e:
-                st.error(f"Request error on attempt {attempt + 1}: {e}")
                 if attempt == max_retries - 1:
                     return None
                 time.sleep(1)
@@ -391,7 +367,6 @@ class OptimizedFulcrumAPI:
         response_data = self._make_request("POST", url, payload)
         if response_data and isinstance(response_data, list) and len(response_data) > 0:
             item_id = response_data[0]["id"]
-            st.success(f"Part '{part_number}' exists with ID: {item_id}")
             return item_id
         return None
     
@@ -416,10 +391,8 @@ class OptimizedFulcrumAPI:
         response_data = self._make_request("POST", url, payload)
         if response_data and "id" in response_data:
             item_id = response_data["id"]
-            st.success(f"Created item with ID: {item_id}")
             return item_id
         
-        st.error("Failed to create item")
         return None
     
     def create_sales_order(self, order_data):
@@ -441,7 +414,6 @@ class OptimizedFulcrumAPI:
         try:
             price_float = round(float(price), 2)
             if price_float <= 0.0:
-                st.error(f"Invalid price ({price_float}) for part line item")
                 return False
 
             url = f"{self.base_url}/sales-orders/{sales_order_id}/part-line-items"
@@ -453,14 +425,11 @@ class OptimizedFulcrumAPI:
 
             response_data = self._make_request("POST", url, payload)
             if response_data:
-                st.success(f"Part line item added to sales order")
                 return True
             else:
-                st.error("Failed to add part line item")
                 return False
 
         except (ValueError, TypeError) as e:
-            st.error(f"Invalid price value: {price}. Error: {e}")
             return False
 
 # Initialize API client
@@ -468,7 +437,377 @@ class OptimizedFulcrumAPI:
 def get_api_client():
     return OptimizedFulcrumAPI(API_TOKEN)
 
-# User Management Functions
+# Business Logic Functions
+def business_days_from(start_date, days):
+    """Calculate business days from start date (excluding weekends)"""
+    current_date = start_date
+    days_added = 0
+    
+    while days_added < days:
+        current_date += timedelta(days=1)
+        # Only count weekdays (Monday=0, Sunday=6)
+        if current_date.weekday() < 5:
+            days_added += 1
+    
+    return current_date
+
+def parse_date_safely(date_str):
+    """Safely parse date string in various formats"""
+    if not date_str or date_str in ["TBD", "Delivered", ""]:
+        return None
+    
+    # Try different date formats
+    date_formats = ["%m/%d/%Y", "%Y-%m-%d", "%m-%d-%Y", "%d/%m/%Y"]
+    
+    for fmt in date_formats:
+        try:
+            return datetime.strptime(str(date_str).strip(), fmt)
+        except ValueError:
+            continue
+    
+    return None
+
+def format_delivery_date(date_input):
+    """Format delivery date for API consumption"""
+    if isinstance(date_input, str):
+        parsed_date = parse_date_safely(date_input)
+        if parsed_date:
+            return parsed_date.strftime("%Y-%m-%d")
+        else:
+            # If can't parse, calculate 18 business days from today
+            calculated_date = business_days_from(datetime.now(), 18)
+            return calculated_date.strftime("%Y-%m-%d")
+    elif hasattr(date_input, 'strftime'):  # datetime or date object
+        return date_input.strftime("%Y-%m-%d")
+    else:
+        # Default fallback
+        calculated_date = business_days_from(datetime.now(), 18)
+        return calculated_date.strftime("%Y-%m-%d")
+
+def process_part_number(part_number, manual_price=None):
+    """Process part number - simplified for web version"""
+    api_client = get_api_client()
+    
+    # Check if item exists
+    existing_item_id = api_client.check_item_exists(part_number)
+    
+    if existing_item_id:
+        return existing_item_id, manual_price or 100.0  # Default price
+    else:
+        # Create new item
+        description = f"Swagelok Part {part_number}"
+        item_id = api_client.create_item(part_number, description)
+        return item_id, manual_price or 100.0  # Default price
+
+def create_sales_order(order_row, delivery_date=None):
+    """Create sales order from order data"""
+    api_client = get_api_client()
+    
+    try:
+        order_number = str(order_row[0]).strip()
+        order_date = str(order_row[1]).strip()
+        part_number = str(order_row[2]).strip()
+        quantity = int(order_row[3])
+        
+        # Handle delivery date with improved logic
+        if delivery_date:
+            due_date_final = format_delivery_date(delivery_date)
+        elif len(order_row) > 4:
+            # Try to use delivery date from order data
+            delivery_from_data = str(order_row[4]).strip() if len(order_row) > 4 else None
+            if delivery_from_data and delivery_from_data not in ["", "TBD", "Delivered"]:
+                due_date_final = format_delivery_date(delivery_from_data)
+            else:
+                # Calculate 18 business days from order date
+                order_dt = parse_date_safely(order_date)
+                if order_dt:
+                    calculated_date = business_days_from(order_dt, 18)
+                    due_date_final = calculated_date.strftime("%Y-%m-%d")
+                else:
+                    # Fallback to 18 business days from today
+                    calculated_date = business_days_from(datetime.now(), 18)
+                    due_date_final = calculated_date.strftime("%Y-%m-%d")
+        else:
+            # Calculate 18 business days from order date
+            order_dt = parse_date_safely(order_date)
+            if order_dt:
+                calculated_date = business_days_from(order_dt, 18)
+                due_date_final = calculated_date.strftime("%Y-%m-%d")
+            else:
+                # Fallback to 18 business days from today
+                calculated_date = business_days_from(datetime.now(), 18)
+                due_date_final = calculated_date.strftime("%Y-%m-%d")
+        
+        # Format order date for API
+        order_dt = parse_date_safely(order_date)
+        if order_dt:
+            order_date_final = order_dt.strftime("%Y-%m-%d")
+        else:
+            order_date_final = datetime.now().strftime("%Y-%m-%d")
+        
+        # Create sales order payload
+        payload = {
+            "customerId": "654241f9c77f04d8d76410c4",  # Swagelok customer ID
+            "customerPoNumber": order_number,
+            "orderedDate": order_date_final,
+            "contact": {"firstName": "Kristian", "lastName": "Barnett"},
+            "dueDate": due_date_final,
+        }
+        
+        # Create sales order
+        sales_order_id = api_client.create_sales_order(payload)
+        if not sales_order_id:
+            return None
+        
+        # Get sales order details to get the SO number
+        so_details = api_client.get_sales_order_details(sales_order_id)
+        sales_order_number = so_details.get("number") if so_details else "Unknown"
+        
+        # Process part and add to order
+        item_id, price = process_part_number(part_number)
+        if item_id:
+            success = api_client.add_part_line_item(sales_order_id, item_id, quantity, price)
+            if success:
+                return sales_order_number
+            else:
+                return None
+        else:
+            return None
+            
+    except Exception as e:
+        st.error(f"Error creating sales order: {str(e)}")
+        return None
+
+def fetch_swagelok_orders(selected_status):
+    """Fetch orders from Swagelok portal with improved parsing"""
+    
+    driver = None
+    
+    try:
+        # Chrome options configuration
+        options = Options()
+        options.add_argument('--headless=new')
+        options.add_argument('--no-sandbox') 
+        options.add_argument('--disable-dev-shm-usage')
+        options.add_argument('--single-process')
+        
+        try:
+            options.binary_location = '/usr/bin/chromium'
+        except:
+            pass
+        
+        # Initialize driver
+        try:
+            service = Service('/usr/bin/chromedriver')
+            driver = webdriver.Chrome(service=service, options=options)
+        except Exception as e1:
+            try:
+                service = Service(ChromeDriverManager().install())
+                driver = webdriver.Chrome(service=service, options=options)
+            except Exception as e2:
+                return [], []
+        
+        # Set timeouts
+        driver.set_page_load_timeout(20)
+        wait = WebDriverWait(driver, 15)
+        
+        # Navigation and login
+        driver.get("https://supplierportal.swagelok.com//login.aspx")
+        
+        username_field = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_txtUsername")))
+        password_field = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_txtPassword")))
+        go_button = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_btnGo2")))
+
+        username_field.send_keys("mstkhan")
+        password_field.send_keys("Concept350!")
+        go_button.click()
+
+        # Handle terms page
+        try:
+            accept_terms_button = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_lnkAcceptTerms")))
+            accept_terms_button.click()
+        except:
+            pass
+
+        # Navigate to orders
+        order_application_link = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_rptPortalApplications_ctl01_lnkPortalApplication")))
+        order_application_link.click()
+        driver.switch_to.window(driver.window_handles[-1])
+
+        # Setup filters
+        checkbox = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_chkOrdersRequiringAction")))
+        if not checkbox.is_selected():
+            checkbox.click()
+
+        dropdown = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_cboRequestStatus")))
+        for option in dropdown.find_elements(By.TAG_NAME, "option"):
+            if option.text == selected_status:
+                option.click()
+                break
+
+        search_button = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_btnSearch")))
+        search_button.click()
+
+        # Extract data with improved parsing
+        data = []
+        row_index = 1
+        max_iterations = 50
+        
+        while row_index <= max_iterations:
+            try:
+                order_details_id = f"ctl00_MainContentPlaceHolder_rptResults_ctl{row_index:02d}_trDetails"
+                
+                try:
+                    order_details_element = wait.until(EC.presence_of_element_located((By.ID, order_details_id)))
+                except:
+                    break
+                
+                order_details_text = order_details_element.text.strip()
+                if not order_details_text:
+                    row_index += 1
+                    continue
+                    
+                details = order_details_text.split()
+                
+                # Improved parsing logic based on order status
+                if selected_status == "Order - History":
+                    # Expected format: OrderNumber Order - History Date PartNumber Qty SalesOrder [DeliveryDate] ...
+                    if len(details) >= 8:
+                        order_number = details[0]
+                        
+                        # Find the date (should be after "History")
+                        date_index = -1
+                        for i, detail in enumerate(details):
+                            if detail == "History" and i + 1 < len(details):
+                                date_index = i + 1
+                                break
+                        
+                        if date_index > 0 and date_index < len(details):
+                            order_date = details[date_index]
+                            part_number = details[date_index + 1] if date_index + 1 < len(details) else ""
+                            quantity = details[date_index + 2] if date_index + 2 < len(details) else "0"
+                            sales_order = details[date_index + 3] if date_index + 3 < len(details) else ""
+                            
+                            # Look for delivery date (should contain "/")
+                            delivery_date = "Delivered"
+                            if date_index + 4 < len(details) and "/" in str(details[date_index + 4]):
+                                delivery_date = details[date_index + 4]
+                            
+                            data.append([order_number, order_date, part_number, quantity, sales_order, delivery_date])
+                
+                elif selected_status == "Order - New, Requires Supplier Action":
+                    # Expected format: OrderNumber Order - New, Requires Supplier Action Date PartNumber Qty DeliveryDate ...
+                    if len(details) >= 11:
+                        order_number = details[0]
+                        
+                        # Find the date (should be after "Action")
+                        date_index = -1
+                        for i, detail in enumerate(details):
+                            if detail == "Action" and i + 1 < len(details):
+                                date_index = i + 1
+                                break
+                        
+                        if date_index > 0 and date_index < len(details):
+                            order_date = details[date_index]
+                            part_number = details[date_index + 1] if date_index + 1 < len(details) else ""
+                            quantity = details[date_index + 2] if date_index + 2 < len(details) else "0"
+                            delivery_date = details[date_index + 3] if date_index + 3 < len(details) else ""
+                            
+                            # Validate delivery date format
+                            if not delivery_date or "/" not in delivery_date:
+                                # Calculate default delivery date
+                                order_dt = parse_date_safely(order_date)
+                                if order_dt:
+                                    delivery_dt = business_days_from(order_dt, 18)
+                                    delivery_date = delivery_dt.strftime("%m/%d/%Y")
+                                else:
+                                    delivery_date = "TBD"
+                            
+                            data.append([order_number, order_date, part_number, quantity, delivery_date])
+                
+                elif selected_status == "Order - Modification, Requires Supplier Action":
+                    # Expected format: OrderNumber Order - Modification, Requires Supplier Action Date PartNumber Qty SalesOrder ...
+                    if len(details) >= 11:
+                        order_number = details[0]
+                        
+                        # Find the date (should be after "Action")
+                        date_index = -1
+                        for i, detail in enumerate(details):
+                            if detail == "Action" and i + 1 < len(details):
+                                date_index = i + 1
+                                break
+                        
+                        if date_index > 0 and date_index < len(details):
+                            order_date = details[date_index]
+                            part_number = details[date_index + 1] if date_index + 1 < len(details) else ""
+                            quantity = details[date_index + 2] if date_index + 2 < len(details) else "0"
+                            sales_order = details[date_index + 3] if date_index + 3 < len(details) else ""
+                            
+                            # Calculate delivery date (18 business days from order date)
+                            order_dt = parse_date_safely(order_date)
+                            if order_dt:
+                                delivery_dt = business_days_from(order_dt, 18)
+                                delivery_date = delivery_dt.strftime("%m/%d/%Y")
+                            else:
+                                delivery_date = "TBD"
+                            
+                            data.append([order_number, order_date, part_number, quantity, sales_order, delivery_date])
+                
+                else:
+                    # Other statuses - generic parsing
+                    if len(details) >= 10:
+                        order_number = details[0]
+                        
+                        # Look for date pattern in the details
+                        order_date = ""
+                        part_number = ""
+                        quantity = "0"
+                        
+                        for i, detail in enumerate(details):
+                            if "/" in detail and len(detail.split("/")) == 3:
+                                order_date = detail
+                                if i + 1 < len(details):
+                                    part_number = details[i + 1]
+                                if i + 2 < len(details):
+                                    quantity = details[i + 2]
+                                break
+                        
+                        # Calculate delivery date
+                        order_dt = parse_date_safely(order_date)
+                        if order_dt:
+                            delivery_dt = business_days_from(order_dt, 18)
+                            delivery_date = delivery_dt.strftime("%m/%d/%Y")
+                        else:
+                            delivery_date = "TBD"
+                        
+                        if order_date and part_number:
+                            data.append([order_number, order_date, part_number, quantity, delivery_date])
+
+                row_index += 1
+                
+            except Exception as e:
+                row_index += 1
+                continue
+
+        # Return appropriate headers based on data structure
+        if data and len(data[0]) == 6:  # Has sales order column
+            return ["Order Number", "Order Date", "Part Number", "Quantity", "Sales Order", "Delivery Date"], data
+        elif data and len(data[0]) == 5:  # No sales order column
+            return ["Order Number", "Order Date", "Part Number", "Quantity", "Delivery Date"], data
+        else:
+            return [], []
+
+    except Exception as e:
+        return [], []
+        
+    finally:
+        if driver:
+            try:
+                driver.quit()
+            except:
+                pass
+
+# User Management Functions (keeping existing ones)
 def create_user_form():
     """Form to create new users (admin only)"""
     st.subheader("👤 Create New User")
@@ -628,7 +967,7 @@ def login_form():
                     st.session_state.orders_data = None
                     st.session_state.created_sos = {}
                     st.session_state.updated_delivery_dates = {}
-                    st.experimental_rerun()
+                    st.rerun()
                 else:
                     st.error(f"❌ {result}")
 
@@ -636,84 +975,7 @@ def logout():
     """Logout function"""
     st.session_state.current_user = None
     st.session_state.orders_data = None
-    st.experimental_rerun()
-
-# Business Logic Functions
-def business_days_from(start_date, days):
-    """Calculate business days from start date"""
-    current_date = start_date
-    while days > 0:
-        current_date += timedelta(days=1)
-        if current_date.weekday() < 5:
-            days -= 1
-    return current_date
-
-def process_part_number(part_number, manual_price=None):
-    """Process part number - simplified for web version"""
-    api_client = get_api_client()
-    
-    # Check if item exists
-    existing_item_id = api_client.check_item_exists(part_number)
-    
-    if existing_item_id:
-        st.info(f"Item {part_number} already exists in system")
-        return existing_item_id, manual_price or 100.0  # Default price
-    else:
-        # Create new item
-        description = f"Swagelok Part {part_number}"
-        item_id = api_client.create_item(part_number, description)
-        return item_id, manual_price or 100.0  # Default price
-
-def create_sales_order(order_row, delivery_date=None):
-    """Create sales order from order data"""
-    api_client = get_api_client()
-    
-    order_number = order_row[0]
-    order_date = order_row[1]
-    part_number = order_row[2]
-    quantity = int(order_row[3])
-    
-    # Calculate due date
-    if delivery_date:
-        due_date_str = delivery_date
-    else:
-        due_date_str = order_row[4] if len(order_row) > 4 else business_days_from(datetime.strptime(order_date, "%m/%d/%Y"), 18).strftime("%m/%d/%Y")
-    
-    # Format due date
-    if "-" in due_date_str:
-        due_date_final = due_date_str
-    else:
-        due_date = datetime.strptime(due_date_str, "%m/%d/%Y")
-        due_date_final = due_date.strftime("%Y-%m-%d")
-    
-    # Create sales order payload
-    payload = {
-        "customerId": "654241f9c77f04d8d76410c4",  # Swagelok customer ID
-        "customerPoNumber": order_number,
-        "orderedDate": datetime.strptime(order_date, "%m/%d/%Y").strftime("%Y-%m-%d"),
-        "contact": {"firstName": "Kristian", "lastName": "Barnett"},
-        "dueDate": due_date_final,
-    }
-    
-    # Create sales order
-    sales_order_id = api_client.create_sales_order(payload)
-    if not sales_order_id:
-        st.error("Failed to create sales order")
-        return None
-    
-    # Get sales order details to get the SO number
-    so_details = api_client.get_sales_order_details(sales_order_id)
-    sales_order_number = so_details.get("number") if so_details else "Unknown"
-    
-    # Process part and add to order
-    item_id, price = process_part_number(part_number)
-    if item_id:
-        api_client.add_part_line_item(sales_order_id, item_id, quantity, price)
-        st.success(f"✅ Sales Order {sales_order_number} created successfully!")
-        return sales_order_number
-    else:
-        st.error(f"Failed to process part {part_number}")
-        return None
+    st.rerun()
 
 # Main app
 def main():
@@ -733,21 +995,21 @@ def main():
         create_user_form()
         if st.button("← Back to Orders"):
             st.session_state.show_create_user = False
-            st.experimental_rerun()
+            st.rerun()
         return
     
     if st.session_state.get('show_view_users', False):
         view_users_form()
         if st.button("← Back to Orders"):
             st.session_state.show_view_users = False
-            st.experimental_rerun()
+            st.rerun()
         return
     
     if st.session_state.get('show_change_password', False):
         change_password_form()
         if st.button("← Back to Orders"):
             st.session_state.show_change_password = False
-            st.experimental_rerun()
+            st.rerun()
         return
     
     # Sidebar for controls and account
@@ -785,15 +1047,6 @@ def main():
                 except Exception as e:
                     st.error(f"❌ Error fetching orders: {str(e)}")
         
-        # Test API connection
-        if st.button("Test API Connection"):
-            with st.spinner("Testing API connection..."):
-                success = test_api_connection()
-                if success:
-                    st.success("✅ API connection successful!")
-                else:
-                    st.error("❌ API connection failed")
-        
         # Separator
         st.markdown("---")
         
@@ -808,15 +1061,15 @@ def main():
         if current_user['is_admin']:
             if st.button("👤 Create Users", use_container_width=True):
                 st.session_state.show_create_user = True
-                st.experimental_rerun()
+                st.rerun()
             
             if st.button("👥 View Users", use_container_width=True):
                 st.session_state.show_view_users = True
-                st.experimental_rerun()
+                st.rerun()
         
         if st.button("🔒 Change Password", use_container_width=True):
             st.session_state.show_change_password = True
-            st.experimental_rerun()
+            st.rerun()
         
         if st.button("🚪 Logout", use_container_width=True):
             logout()
@@ -825,7 +1078,6 @@ def main():
         if current_user['is_admin']:
             st.markdown("---")
             st.markdown("**📁 Backup Status**")
-            user_db = get_user_db()
             
             # Simple backup status check
             try:
@@ -846,10 +1098,10 @@ def main():
         columns = st.session_state.orders_data.columns.tolist()
         
         # Create proper table headers based on the order status
-        if len(columns) == 6:  # Order History and Order Modification format (both have Sales Order column)
+        if len(columns) == 6:  # Has Sales Order column (Order History and Order Modification)
             header_cols = st.columns([0.5, 1.2, 1.2, 2, 1, 1.2, 1.2, 1.5])
             headers = ["No.", "Order #", "Date", "Part Number", "Qty", "Sales Order", "Delivery", "Action"]
-        else:  # Order New and other formats (5 columns - no sales order)
+        else:  # No Sales Order column (Order New and others)
             header_cols = st.columns([0.5, 1.2, 1.2, 2, 1, 1.5, 1.5])
             headers = ["No.", "Order #", "Date", "Part Number", "Qty", "Delivery", "Action"]
         
@@ -860,10 +1112,10 @@ def main():
         
         st.markdown("---")  # Separator line
         
-        # Display data rows
+        # Display data rows with improved delivery date handling
         for idx, row in st.session_state.orders_data.iterrows():
-            if len(columns) == 6:  # Order History format
-                col1, col2, col3, col4, col5, col6, col7 = st.columns([0.5, 1.2, 1.2, 2, 1, 1.2, 1.5])
+            if len(columns) == 6:  # Has Sales Order column
+                col1, col2, col3, col4, col5, col6, col7, col8 = st.columns([0.5, 1.2, 1.2, 2, 1, 1.2, 1.2, 1.5])
                 
                 with col1:
                     st.write(f"{idx + 1}")
@@ -878,7 +1130,18 @@ def main():
                 with col6:
                     st.write(f"{row.iloc[4]}")  # Sales Order
                 with col7:
-                    order_number = row.iloc[0]
+                    delivery_value = str(row.iloc[5])  # Delivery Date
+                    if delivery_value in ["Delivered", "TBD", ""]:
+                        st.write(delivery_value)
+                    else:
+                        # Try to parse and display as editable date
+                        parsed_date = parse_date_safely(delivery_value)
+                        if parsed_date:
+                            st.write(delivery_value)  # Show original format
+                        else:
+                            st.write(delivery_value)
+                with col8:
+                    order_number = str(row.iloc[0])
                     if order_number in st.session_state.created_sos:
                         st.success(f"SO: {st.session_state.created_sos[order_number]}")
                     else:
@@ -892,24 +1155,16 @@ def main():
                             if st.button(f"Execute", key=f"execute_{idx}"):
                                 with st.spinner(f"Creating SO for Order {order_number}..."):
                                     order_data = row.tolist()
-                                    # Use delivery date from the data (position 5 in Order History)
-                                    try:
-                                        delivery_date_str = row.iloc[5]
-                                        # Try to parse and format the date
-                                        if "/" in delivery_date_str:
-                                            parsed_date = datetime.strptime(delivery_date_str, "%m/%d/%Y")
-                                            delivery_date = parsed_date.strftime("%Y-%m-%d")
-                                        else:
-                                            delivery_date = delivery_date_str
-                                    except:
-                                        delivery_date = business_days_from(datetime.now(), 18).strftime("%Y-%m-%d")
-                                    
+                                    delivery_date = str(row.iloc[5])  # Use delivery date from column 5
                                     so_number = create_sales_order(order_data, delivery_date)
                                     if so_number:
                                         st.session_state.created_sos[order_number] = so_number
-                                        st.experimental_rerun()
+                                        st.success(f"✅ Created SO: {so_number}")
+                                        st.rerun()
+                                    else:
+                                        st.error("❌ Failed to create Sales Order")
             
-            elif len(columns) == 5:  # New orders and Modification format
+            else:  # No Sales Order column (5 columns)
                 col1, col2, col3, col4, col5, col6, col7 = st.columns([0.5, 1.2, 1.2, 2, 1, 1.5, 1.5])
                 
                 with col1:
@@ -923,54 +1178,50 @@ def main():
                 with col5:
                     st.write(f"{row.iloc[3]}")  # Quantity
                 with col6:
-                    # Delivery date picker
-                    try:
-                        default_date = datetime.strptime(row.iloc[4], "%m/%d/%Y").date()
-                    except:
-                        # If date parsing fails, use business days from now
-                        default_date = business_days_from(datetime.now(), 18).date()
+                    # Delivery date - handle editable dates for new orders
+                    delivery_value = str(row.iloc[4])  # Delivery Date
                     
-                    delivery_date = st.date_input(
-                        "Delivery",
-                        value=default_date,
-                        key=f"delivery_{idx}",
-                        label_visibility="collapsed"
-                    )
-                with col7:
-                    order_number = row.iloc[0]
-                    if order_number in st.session_state.created_sos:
-                        st.success(f"SO: {st.session_state.created_sos[order_number]}")
-                    else:
-                        action = st.selectbox(
-                            "Action",
-                            ["Select Action", "Create SO"],
-                            key=f"action_{idx}",
+                    if delivery_value in ["TBD", "Delivered", ""]:
+                        # Calculate a default date for TBD orders
+                        order_dt = parse_date_safely(str(row.iloc[1]))
+                        if order_dt:
+                            default_delivery = business_days_from(order_dt, 18).date()
+                        else:
+                            default_delivery = business_days_from(datetime.now(), 18).date()
+                        
+                        delivery_date = st.date_input(
+                            "Delivery",
+                            value=default_delivery,
+                            key=f"delivery_{idx}",
                             label_visibility="collapsed"
                         )
-                        if action == "Create SO":
-                            if st.button(f"Execute", key=f"execute_{idx}"):
-                                with st.spinner(f"Creating SO for Order {order_number}..."):
-                                    order_data = row.tolist()
-                                    so_number = create_sales_order(order_data, delivery_date.strftime("%Y-%m-%d"))
-                                    if so_number:
-                                        st.session_state.created_sos[order_number] = so_number
-                                        st.experimental_rerun()
-            
-            else:  # Other formats
-                col1, col2, col3, col4, col5, col6 = st.columns([0.5, 1.2, 1.2, 2, 1, 1.5])
+                    else:
+                        # Try to parse existing date and make it editable
+                        parsed_date = parse_date_safely(delivery_value)
+                        if parsed_date:
+                            delivery_date = st.date_input(
+                                "Delivery",
+                                value=parsed_date.date(),
+                                key=f"delivery_{idx}",
+                                label_visibility="collapsed"
+                            )
+                        else:
+                            # Fallback to calculated date
+                            order_dt = parse_date_safely(str(row.iloc[1]))
+                            if order_dt:
+                                default_delivery = business_days_from(order_dt, 18).date()
+                            else:
+                                default_delivery = business_days_from(datetime.now(), 18).date()
+                            
+                            delivery_date = st.date_input(
+                                "Delivery",
+                                value=default_delivery,
+                                key=f"delivery_{idx}",
+                                label_visibility="collapsed"
+                            )
                 
-                with col1:
-                    st.write(f"{idx + 1}")
-                with col2:
-                    st.write(f"{row.iloc[0]}")  # Order Number
-                with col3:
-                    st.write(f"{row.iloc[1]}")  # Order Date
-                with col4:
-                    st.write(f"{row.iloc[2]}")  # Part Number
-                with col5:
-                    st.write(f"{row.iloc[3]}")  # Quantity
-                with col6:
-                    order_number = row.iloc[0]
+                with col7:
+                    order_number = str(row.iloc[0])
                     if order_number in st.session_state.created_sos:
                         st.success(f"SO: {st.session_state.created_sos[order_number]}")
                     else:
@@ -984,11 +1235,13 @@ def main():
                             if st.button(f"Execute", key=f"execute_{idx}"):
                                 with st.spinner(f"Creating SO for Order {order_number}..."):
                                     order_data = row.tolist()
-                                    default_date = business_days_from(datetime.now(), 18).strftime("%Y-%m-%d")
-                                    so_number = create_sales_order(order_data, default_date)
+                                    so_number = create_sales_order(order_data, delivery_date)
                                     if so_number:
                                         st.session_state.created_sos[order_number] = so_number
-                                        st.experimental_rerun()
+                                        st.success(f"✅ Created SO: {so_number}")
+                                        st.rerun()
+                                    else:
+                                        st.error("❌ Failed to create Sales Order")
             
             # Add subtle separator between rows
             if idx < len(st.session_state.orders_data) - 1:
@@ -1009,222 +1262,6 @@ def main():
         4. **Adjust delivery dates** as needed (for applicable order types)
         5. **Select 'Create SO'** from action dropdown and click Execute
         """)
-
-def test_api_connection():
-    """Test connection to Fulcrum API"""
-    try:
-        api_client = get_api_client()
-        # Try a simple API call
-        headers = {
-            "Authorization": f"Bearer {api_client.api_token}",
-            "Content-Type": "application/json",
-            "Accept": "application/json"
-        }
-        
-        payload = {
-            "numbers": [{"query": "TEST", "mode": "equal"}],
-            "latestRevision": True
-        }
-        
-        response = requests.post(f"{BASE_URL}/items/list/v2", json=payload, headers=headers, timeout=10)
-        return response.status_code in [200, 201]
-    except Exception as e:
-        return False
-
-def fetch_swagelok_orders(selected_status):
-    """Fetch orders from Swagelok portal with Config 3 (proven to work)"""
-    
-    driver = None
-    
-    try:
-        st.info(f"🔄 Starting browser session for: {selected_status}")
-        
-        # Use Config 3 directly since it works
-        options = Options()
-        options.add_argument('--headless=new')
-        options.add_argument('--no-sandbox') 
-        options.add_argument('--disable-dev-shm-usage')
-        options.add_argument('--single-process')
-        
-        try:
-            options.binary_location = '/usr/bin/chromium'
-        except:
-            st.warning("Could not set chromium binary location")
-        
-        # Initialize driver
-        try:
-            service = Service('/usr/bin/chromedriver')
-            driver = webdriver.Chrome(service=service, options=options)
-            st.success("✅ Driver created successfully")
-        except Exception as e1:
-            st.warning(f"System chromedriver failed: {str(e1)}")
-            try:
-                service = Service(ChromeDriverManager().install())
-                driver = webdriver.Chrome(service=service, options=options)
-                st.success("✅ Driver created with webdriver-manager")
-            except Exception as e2:
-                st.error(f"Both drivers failed: {str(e2)}")
-                return [], []
-        
-        # Set timeouts
-        driver.set_page_load_timeout(20)
-        wait = WebDriverWait(driver, 15)
-        
-        # Navigation and login
-        st.info("🌐 Navigating to Swagelok portal...")
-        driver.get("https://supplierportal.swagelok.com//login.aspx")
-        
-        st.info("🔐 Logging in...")
-        username_field = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_txtUsername")))
-        password_field = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_txtPassword")))
-        go_button = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_btnGo2")))
-
-        username_field.send_keys("mstkhan")
-        password_field.send_keys("Concept350!")
-        go_button.click()
-
-        # Handle terms page
-        try:
-            accept_terms_button = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_lnkAcceptTerms")))
-            accept_terms_button.click()
-            st.info("✅ Terms accepted")
-        except:
-            st.info("ℹ️ No terms page found")
-
-        # Navigate to orders
-        st.info("📦 Navigating to orders...")
-        order_application_link = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_rptPortalApplications_ctl01_lnkPortalApplication")))
-        order_application_link.click()
-        driver.switch_to.window(driver.window_handles[-1])
-
-        # Setup filters
-        st.info(f"🔍 Setting up filters for: {selected_status}")
-        checkbox = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_chkOrdersRequiringAction")))
-        if not checkbox.is_selected():
-            checkbox.click()
-
-        dropdown = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_cboRequestStatus")))
-        for option in dropdown.find_elements(By.TAG_NAME, "option"):
-            if option.text == selected_status:
-                option.click()
-                break
-
-        search_button = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_btnSearch")))
-        search_button.click()
-
-        # Extract data
-        st.info("📊 Extracting order data...")
-        
-        data = []
-        row_index = 1
-        max_iterations = 50
-        
-        while row_index <= max_iterations:
-            try:
-                order_details_id = f"ctl00_MainContentPlaceHolder_rptResults_ctl{row_index:02d}_trDetails"
-                
-                try:
-                    order_details_element = wait.until(EC.presence_of_element_located((By.ID, order_details_id)))
-                except:
-                    break
-                
-                order_details_text = order_details_element.text
-                details = order_details_text.split()
-                
-                # Parse based on the correct format for each status
-                if selected_status == "Order - History":
-                    # Format: OrderNumber Order - History Date PartNumber Qty SalesOrder [DeliveryDate] Other...
-                    if len(details) >= 8:
-                        order_number = details[0]      # Position 0: Order Number
-                        order_date = details[4]        # Position 4: Date
-                        part_number = details[5]       # Position 5: Part Number  
-                        quantity = details[6]          # Position 6: Quantity
-                        sales_order = details[7]       # Position 7: Sales Order (4 digits)
-                        
-                        # Check if position 8 is a delivery date (contains "/")
-                        if len(details) >= 9 and "/" in details[8]:
-                            delivery_date = details[8]  # Position 8: Delivery Date
-                        else:
-                            delivery_date = "Delivered"  # No delivery date = already delivered
-                        
-                        data.append([order_number, order_date, part_number, quantity, sales_order, delivery_date])
-                
-                elif selected_status == "Order - New, Requires Supplier Action":
-                    # Format: OrderNumber Order - New, Requires Supplier Action Date PartNumber Qty DeliveryDate Other...
-                    if len(details) >= 11:
-                        order_number = details[0]      # Position 0: Order Number
-                        order_date = details[7]        # Position 7: Date (after "Order - New, Requires Supplier Action")
-                        part_number = details[8]       # Position 8: Part Number
-                        quantity = details[9]          # Position 9: Quantity
-                        delivery_date = details[10]    # Position 10: Delivery Date
-                        
-                        data.append([order_number, order_date, part_number, quantity, delivery_date])
-                
-                elif selected_status == "Order - Modification, Requires Supplier Action":
-                    # Format: OrderNumber Order - Modification, Requires Supplier Action Date PartNumber Qty SalesOrder Other...
-                    if len(details) >= 11:
-                        order_number = details[0]      # Position 0: Order Number
-                        order_date = details[7]        # Position 7: Date (after "Order - Modification, Requires Supplier Action")
-                        part_number = details[8]       # Position 8: Part Number
-                        quantity = details[9]          # Position 9: Quantity
-                        sales_order = details[10]      # Position 10: Sales Order (4 digits)
-                        
-                        # Calculate delivery date (18 business days from order date)
-                        try:
-                            order_dt = datetime.strptime(order_date, "%m/%d/%Y")
-                            delivery_dt = business_days_from(order_dt, 18)
-                            delivery_date = delivery_dt.strftime("%m/%d/%Y")
-                        except:
-                            delivery_date = "TBD"
-                        
-                        data.append([order_number, order_date, part_number, quantity, sales_order, delivery_date])
-                
-                else:
-                    # Other statuses: Add calculated delivery date
-                    if len(details) >= 10:
-                        order_number = details[0]
-                        order_date = details[7]
-                        part_number = details[8]
-                        quantity = details[9]
-                        
-                        # Calculate delivery date (18 business days from order date)
-                        try:
-                            order_dt = datetime.strptime(order_date, "%m/%d/%Y")
-                            delivery_dt = business_days_from(order_dt, 18)
-                            delivery_date = delivery_dt.strftime("%m/%d/%Y")
-                        except:
-                            delivery_date = "TBD"
-                        
-                        data.append([order_number, order_date, part_number, quantity, delivery_date])
-
-                row_index += 1
-                
-            except Exception as e:
-                st.warning(f"Error parsing row {row_index}: {str(e)}")
-                break
-
-        st.success(f"✅ Successfully extracted {len(data)} orders")
-        
-        # Return appropriate headers - all order types now have delivery date
-        if selected_status == "Order - History":
-            return ["Order Number", "Order Date", "Part Number", "Quantity", "Sales Order", "Delivery Date"], data
-        elif selected_status == "Order - Modification, Requires Supplier Action":
-            return ["Order Number", "Order Date", "Part Number", "Quantity", "Sales Order", "Delivery Date"], data
-        elif selected_status == "Order - New, Requires Supplier Action":
-            return ["Order Number", "Order Date", "Part Number", "Quantity", "Delivery Date"], data
-        else:
-            return ["Order Number", "Order Date", "Part Number", "Quantity", "Delivery Date"], data
-
-    except Exception as e:
-        st.error(f"❌ Scraping error: {str(e)}")
-        return [], []
-        
-    finally:
-        if driver:
-            try:
-                driver.quit()
-            except:
-                pass
 
 if __name__ == "__main__":
     main()
