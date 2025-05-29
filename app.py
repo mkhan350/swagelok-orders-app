@@ -534,12 +534,15 @@ def view_users_form():
     
     # Backup status section
     st.markdown("### 📁 Repo Backup Status")
-    backup_exists, backup_status = user_db.get_backup_status()
     
-    if backup_exists:
-        st.success(backup_status)
-    else:
-        st.warning(backup_status)
+    # Simple backup status check
+    try:
+        if os.path.exists("users_backup.json"):
+            st.success("✅ Backup file exists in repo")
+        else:
+            st.warning("❌ No backup file found")
+    except:
+        st.error("❌ Backup check failed")
     
     # Backup management
     col1, col2 = st.columns(2)
@@ -817,11 +820,15 @@ def main():
             st.markdown("---")
             st.markdown("**📁 Backup Status**")
             user_db = get_user_db()
-            backup_exists, backup_status = user_db.get_backup_status()
-            if backup_exists:
-                st.success("✅ Repo Backup Active")
-            else:
-                st.warning("⚠️ No Backup File")
+            
+            # Simple backup status check
+            try:
+                if os.path.exists("users_backup.json"):
+                    st.success("✅ Repo Backup Active")
+                else:
+                    st.warning("⚠️ No Backup File")
+            except:
+                st.error("❌ Backup Check Failed")
     
     # Main content area
     if st.session_state.orders_data is not None:
