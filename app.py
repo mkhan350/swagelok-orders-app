@@ -766,18 +766,34 @@ def main():
             ]
         )
         
+        # Clear old data when order status changes
+        if st.session_state.get('last_order_status') != order_status:
+            st.session_state.orders_data = None
+            st.session_state.created_sos = {}
+            st.session_state.last_order_status = order_status
+            st.info(f"📋 Selected: {order_status}")
+        
         # Fetch orders button
         if st.button("Fetch Orders", type="primary"):
-            with st.spinner("Fetching orders from Swagelok portal..."):
-                try:
-                    headers, data = fetch_swagelok_orders(order_status)
-                    if data:
-                        st.session_state.orders_data = pd.DataFrame(data, columns=headers)
-                        st.success(f"✅ Fetched {len(data)} orders successfully!")
-                    else:
-                        st.error("❌ No orders found or connection failed")
-                except Exception as e:
-                    st.error(f"❌ Error fetching orders: {str(e)}")
+            # Prevent multiple concurrent fetches
+            if st.session_state.get('fetching_orders', False):
+                st.warning("⏳ Already fetching orders, please wait...")
+            else:
+                st.session_state.fetching_orders = True
+                
+                with st.spinner("Fetching orders from Swagelok portal..."):
+                    try:
+                        headers, data = fetch_swagelok_orders(order_status)
+                        if data:
+                            st.session_state.orders_data = pd.DataFrame(data, columns=headers)
+                            st.success(f"✅ Fetched {len(data)} orders successfully!")
+                        else:
+                            st.error("❌ No orders found or connection failed")
+                    except Exception as e:
+                        st.error(f"❌ Error fetching orders: {str(e)}")
+                    finally:
+                        # Always clear the fetching flag
+                        st.session_state.fetching_orders = False
         
         # Test API connection
         if st.button("Test API Connection"):
@@ -1028,10 +1044,34 @@ def test_api_connection():
     except Exception as e:
         return False
 
-def fetch_swagelok_orders(selected_status):
-    """Fetch orders from Swagelok portal using Selenium"""
+def cleanup_selenium_session():
+    """Force cleanup of any lingering Selenium processes"""
+    try:
+        import psutil
+        import signal
+        
+        # Kill any chrome/chromium processes
+        for proc in psutil.process_iter(['pid', 'name']):
+            try:
+                if 'chrome' in proc.info['name'].lower() or 'chromium' in proc.info['name'].lower():
+                    proc.kill()
+            except:
+                pass
+    except ImportError:
+        # psutil not available, skip process cleanup
+        pass
     
-    # Setup Chrome options for better stability
+    # Add small delay to let processes cleanup
+    import time
+    time.sleep(2)
+
+def fetch_swagelok_orders(selected_status):
+    """Fetch orders from Swagelok portal using fresh Selenium session"""
+    
+    # Force cleanup of any previous sessions
+    cleanup_selenium_session()
+    
+    # Setup Chrome options for maximum stability
     options = Options()
     options.add_argument('--headless=new')
     options.add_argument('--no-sandbox')
@@ -1039,25 +1079,31 @@ def fetch_swagelok_orders(selected_status):
     options.add_argument('--disable-gpu')
     options.add_argument('--disable-extensions')
     options.add_argument('--window-size=1920,1080')
-    options.add_argument('--disable-blink-features=AutomationControlled')
-    options.add_argument('--remote-debugging-port=9222')
     options.add_argument('--disable-web-security')
     options.add_argument('--disable-features=VizDisplayCompositor')
     options.add_argument('--disable-background-timer-throttling')
     options.add_argument('--disable-backgrounding-occluded-windows')
     options.add_argument('--disable-renderer-backgrounding')
-    options.add_argument('--single-process')  # Additional stability
+    options.add_argument('--single-process')
     options.add_argument('--disable-background-networking')
+    options.add_argument('--disable-blink-features=AutomationControlled')
+    options.add_argument('--disable-logging')
+    options.add_argument('--disable-dev-tools')
+    options.add_argument('--remote-debugging-port=0')  # Use random port
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option('useAutomationExtension', False)
+    options.add_experimental_option("detach", False)  # Ensure proper cleanup
     
     # For Streamlit Cloud with chromium packages
     options.binary_location = '/usr/bin/chromium'
     
     driver = None
+    wait = None
     
     try:
-        # Try to use system chromium-driver first, fallback to webdriver-manager
+        st.info(f"🔄 Starting fresh browser session for: {selected_status}")
+        
+        # Create completely new driver instance
         try:
             service = Service('/usr/bin/chromedriver')
             driver = webdriver.Chrome(service=service, options=options)
@@ -1065,37 +1111,54 @@ def fetch_swagelok_orders(selected_status):
             # Fallback to webdriver-manager
             service = Service(ChromeDriverManager().install())
             driver = webdriver.Chrome(service=service, options=options)
-            
-        # Set longer timeout for stability
-        wait = WebDriverWait(driver, 20)
+        
+        # Set aggressive timeouts for stability
+        driver.set_page_load_timeout(30)
+        driver.implicitly_wait(5)
+        wait = WebDriverWait(driver, 25)
+        
+        st.info("🌐 Navigating to Swagelok portal...")
         
         # Navigate to Swagelok login
         driver.get("https://supplierportal.swagelok.com//login.aspx")
+        
+        st.info("🔐 Logging in...")
         
         # Login
         username_field = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_txtUsername")))
         password_field = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_txtPassword")))
         go_button = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_btnGo2")))
 
+        username_field.clear()
         username_field.send_keys("mstkhan")
+        password_field.clear()
         password_field.send_keys("Concept350!")
         go_button.click()
 
         # Handle terms page if it appears
         try:
+            st.info("📋 Checking for terms page...")
             accept_terms_button = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_lnkAcceptTerms")))
             accept_terms_button.click()
+            st.info("✅ Terms accepted")
         except:
-            pass  # Terms page might not appear
+            st.info("ℹ️ No terms page found")
 
+        st.info("📦 Navigating to orders section...")
+        
         # Navigate to orders
         order_application_link = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_rptPortalApplications_ctl01_lnkPortalApplication")))
         order_application_link.click()
+        
+        # Switch to new window
         driver.switch_to.window(driver.window_handles[-1])
 
+        st.info(f"🔍 Setting up filters for: {selected_status}")
+        
         # Setup filters
         checkbox = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_chkOrdersRequiringAction")))
-        checkbox.click()
+        if not checkbox.is_selected():
+            checkbox.click()
 
         dropdown = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_cboRequestStatus")))
         for option in dropdown.find_elements(By.TAG_NAME, "option"):
@@ -1106,29 +1169,34 @@ def fetch_swagelok_orders(selected_status):
         search_button = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_btnSearch")))
         search_button.click()
 
+        st.info("📊 Extracting order data...")
+        
         # Extract order data with improved parsing
         data = []
         row_index = 1
-        max_iterations = 100  # Limit for cloud deployment
+        max_iterations = 50  # Reduced for stability
         
         while row_index <= max_iterations:
             try:
                 order_details_id = f"ctl00_MainContentPlaceHolder_rptResults_ctl{row_index:02d}_trDetails"
-                order_details_element = wait.until(EC.presence_of_element_located((By.ID, order_details_id)))
+                
+                # Use shorter timeout for individual elements
+                element_wait = WebDriverWait(driver, 3)
+                order_details_element = element_wait.until(EC.presence_of_element_located((By.ID, order_details_id)))
                 
                 order_details_text = order_details_element.text
                 details = order_details_text.split()
                 
                 # Handle different order status formats
                 if selected_status == "Order - History":
-                    # Order History format: Order#, Order Date, Part#, Qty, Sales Order, Delivery Date
-                    if len(details) >= 6:
-                        order_number = details[0]
-                        order_date = details[1]  # Different position for Order History
-                        part_number = details[2]
-                        quantity = details[3]
-                        sales_order = details[4]
-                        delivery_date = details[5]
+                    # Order History format: Order#, [space], [space], [space], Date, Part#, Qty, Sales Order, Delivery Date
+                    if len(details) >= 9:
+                        order_number = details[0]      # Position 0: Order Number
+                        order_date = details[4]        # Position 4: Date (after 4 spaces)  
+                        part_number = details[5]       # Position 5: Part Number
+                        quantity = details[6]          # Position 6: Quantity
+                        sales_order = details[7]       # Position 7: Sales Order
+                        delivery_date = details[8]     # Position 8: Delivery Date
                         data.append([order_number, order_date, part_number, quantity, sales_order, delivery_date])
                 
                 elif selected_status in ["Order - New, Requires Supplier Action"]:
@@ -1173,6 +1241,8 @@ def fetch_swagelok_orders(selected_status):
                     if row_index > max_iterations:
                         break
 
+        st.success(f"✅ Successfully extracted {len(data)} orders")
+        
         # Return appropriate headers and data based on order status
         if selected_status == "Order - History":
             return ["Order Number", "Order Date", "Part Number", "Quantity", "Sales Order", "Delivery Date"], data
@@ -1184,24 +1254,32 @@ def fetch_swagelok_orders(selected_status):
     except Exception as e:
         error_msg = f"Scraping error: {str(e)}"
         st.error(error_msg)
-        
-        # More robust driver cleanup on error
-        if driver:
-            try:
-                driver.quit()
-            except Exception as quit_error:
-                # Ignore driver quit errors as they're common with DevTools issues
-                pass
+        st.error("🔄 Session will be cleaned up for next attempt")
         
         return [], []
         
     finally:
+        # AGGRESSIVE CLEANUP - Force close everything
+        st.info("🧹 Cleaning up browser session...")
+        
         if driver:
             try:
-                driver.quit() 
-            except Exception as quit_error:
-                # Ignore driver quit errors
+                # Close all windows
+                for handle in driver.window_handles:
+                    driver.switch_to.window(handle)
+                    driver.close()
+            except:
                 pass
+            
+            try:
+                driver.quit()
+            except:
+                pass
+        
+        # Force cleanup any remaining processes
+        cleanup_selenium_session()
+        
+        st.info("✅ Browser session cleaned up")
 
 if __name__ == "__main__":
     main()
