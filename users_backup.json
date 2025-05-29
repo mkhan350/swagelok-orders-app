@@ -1,0 +1,14 @@
+{
+  "backup_timestamp": "2025-05-29T00:00:00",
+  "users": [
+    {
+      "username": "mstkhan",
+      "first_name": "Muhammad",
+      "last_name": "Khan", 
+      "password_hash": "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3",
+      "is_admin": true,
+      "created_at": "2025-05-29 00:00:00",
+      "last_login": null
+    }
+  ]
+}
