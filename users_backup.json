@@ -1,14 +1,32 @@
 {
-  "backup_timestamp": "2025-05-29T00:00:00",
+  "backup_timestamp": "2025-05-29T19:47:12.903141",
   "users": [
     {
       "username": "mstkhan",
       "first_name": "Muhammad",
-      "last_name": "Khan", 
-      "password_hash": "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3",
+      "last_name": "Khan",
+      "password_hash": "e4f7504d175d120d9b2cd291ee0551cee82f15b948f6e46fdac2b1211c677798",
       "is_admin": true,
-      "created_at": "2025-05-29 00:00:00",
+      "created_at": "2025-05-29 19:46:23",
+      "last_login": "2025-05-29 19:46:25"
+    },
+    {
+      "username": "stanguay350",
+      "first_name": "Suzanne",
+      "last_name": "Tanguay",
+      "password_hash": "cbd70b20ca489ac3ebeeb8f99e49e3d982c37e671d032407d53a18e398d7d88f",
+      "is_admin": false,
+      "created_at": "2025-05-29 18:33:30",
       "last_login": null
+    },
+    {
+      "username": "stanguay",
+      "first_name": "Suzanne",
+      "last_name": "Tanguay",
+      "password_hash": "90fae1a598d4eb183dff7a13706cfb6c045944b7b8fd2e02ee07d1d647630865",
+      "is_admin": false,
+      "created_at": "2025-05-29 13:03:20",
+      "last_login": "2025-05-29 18:40:26"
     }
   ]
 }
