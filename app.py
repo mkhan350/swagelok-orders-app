@@ -408,13 +408,20 @@ def view_users_form():
 
 # Authentication
 def login_form():
-    """Centered login form like professional websites"""
-    st.markdown("<h1 style='text-align: center;'>FV - Open Orders</h1>", unsafe_allow_html=True)
+    """Centered login form with logo and proper title"""
     
-    # Create centered columns
-    col1, col2, col3 = st.columns([1, 2, 1])
+    # Create centered columns - narrower than before
+    col1, col2, col3 = st.columns([2, 1, 2])
     
     with col2:
+        # Logo (you'll need to upload the logo file to your Streamlit app)
+        try:
+            st.image("concept_insulon_logo.png", width=200)
+        except:
+            # Placeholder if logo file isn't found
+            st.markdown("**[CONCEPT INSULON LOGO]**")
+        
+        st.markdown("<h1 style='text-align: center; margin-top: 1rem;'>FV - Open Orders Management System</h1>", unsafe_allow_html=True)
         st.markdown("<h3 style='text-align: center; margin-bottom: 2rem;'>🔐 Login</h3>", unsafe_allow_html=True)
         
         with st.form("login_form"):
@@ -541,7 +548,7 @@ def main():
     header_col1, header_col2 = st.columns([3, 1])
     
     with header_col1:
-        st.title("FV - Open Orders")
+        st.title("Swagelok Open Orders")
     
     with header_col2:
         # Account dropdown menu
