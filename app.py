@@ -775,25 +775,16 @@ def main():
         
         # Fetch orders button
         if st.button("Fetch Orders", type="primary"):
-            # Prevent multiple concurrent fetches
-            if st.session_state.get('fetching_orders', False):
-                st.warning("⏳ Already fetching orders, please wait...")
-            else:
-                st.session_state.fetching_orders = True
-                
-                with st.spinner("Fetching orders from Swagelok portal..."):
-                    try:
-                        headers, data = fetch_swagelok_orders(order_status)
-                        if data:
-                            st.session_state.orders_data = pd.DataFrame(data, columns=headers)
-                            st.success(f"✅ Fetched {len(data)} orders successfully!")
-                        else:
-                            st.error("❌ No orders found or connection failed")
-                    except Exception as e:
-                        st.error(f"❌ Error fetching orders: {str(e)}")
-                    finally:
-                        # Always clear the fetching flag
-                        st.session_state.fetching_orders = False
+            with st.spinner("Fetching orders from Swagelok portal..."):
+                try:
+                    headers, data = fetch_swagelok_orders(order_status)
+                    if data:
+                        st.session_state.orders_data = pd.DataFrame(data, columns=headers)
+                        st.success(f"✅ Fetched {len(data)} orders successfully!")
+                    else:
+                        st.error("❌ No orders found or connection failed")
+                except Exception as e:
+                    st.error(f"❌ Error fetching orders: {str(e)}")
         
         # Test API connection
         if st.button("Test API Connection"):
@@ -1045,158 +1036,223 @@ def test_api_connection():
         return False
 
 def fetch_swagelok_orders(selected_status):
-    """Fetch orders from Swagelok portal using simplified Selenium approach"""
+    """Fetch orders from Swagelok portal with robust error handling"""
     
-    # Use simple Chrome options like the original working code
-    options = Options()
-    options.add_argument('--headless')
-    options.add_argument('--disable-gpu')
-    options.add_argument('--no-sandbox')
-    options.add_argument('--disable-dev-shm-usage')
-    options.binary_location = '/usr/bin/chromium'
+    # Try multiple Chrome configurations for maximum compatibility
+    chrome_configs = [
+        # Config 1: Minimal options (most stable)
+        {
+            'args': ['--headless', '--no-sandbox', '--disable-dev-shm-usage'],
+            'name': 'Minimal'
+        },
+        # Config 2: Standard options
+        {
+            'args': ['--headless', '--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
+            'name': 'Standard'  
+        },
+        # Config 3: Alternative approach
+        {
+            'args': ['--headless=new', '--no-sandbox', '--disable-dev-shm-usage', '--single-process'],
+            'name': 'Alternative'
+        }
+    ]
     
-    driver = None
-    
-    try:
-        st.info(f"🔄 Starting browser session for: {selected_status}")
-        
-        # Simple driver initialization
+    for config_idx, config in enumerate(chrome_configs):
+        driver = None
         try:
-            service = Service('/usr/bin/chromedriver')
-            driver = webdriver.Chrome(service=service, options=options)
-        except:
-            service = Service(ChromeDriverManager().install())
-            driver = webdriver.Chrome(service=service, options=options)
-        
-        wait = WebDriverWait(driver, 10)
-        
-        st.info("🌐 Navigating to Swagelok portal...")
-        driver.get("https://supplierportal.swagelok.com//login.aspx")
-        
-        # Login
-        username_field = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_txtUsername")))
-        password_field = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_txtPassword")))
-        go_button = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_btnGo2")))
-
-        username_field.send_keys("mstkhan")
-        password_field.send_keys("Concept350!")
-        go_button.click()
-
-        # Handle terms page
-        try:
-            accept_terms_button = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_lnkAcceptTerms")))
-            accept_terms_button.click()
-        except:
-            st.info("No terms page found")
-
-        # Navigate to orders
-        order_application_link = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_rptPortalApplications_ctl01_lnkPortalApplication")))
-        order_application_link.click()
-        driver.switch_to.window(driver.window_handles[-1])
-
-        # Setup filters
-        checkbox = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_chkOrdersRequiringAction")))
-        checkbox.click()
-
-        dropdown = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_cboRequestStatus")))
-        for option in dropdown.find_elements(By.TAG_NAME, "option"):
-            if option.text == selected_status:
-                option.click()
-                break
-
-        search_button = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_btnSearch")))
-        search_button.click()
-
-        st.info("📊 Extracting order data...")
-        
-        # Extract data using original logic
-        data = []
-        row_index = 1
-        max_iterations = 100
-        
-        while row_index <= max_iterations:
+            st.info(f"🔄 Trying Chrome config {config_idx + 1}/3: {config['name']}")
+            
+            # Setup Chrome options
+            options = Options()
+            for arg in config['args']:
+                options.add_argument(arg)
+            
+            # Try to set binary location
             try:
-                order_details_id = f"ctl00_MainContentPlaceHolder_rptResults_ctl{row_index:02d}_trDetails"
-                
-                try:
-                    order_details_element = wait.until(EC.presence_of_element_located((By.ID, order_details_id)))
-                except:
-                    # No more rows found
-                    break
-                
-                order_details_text = order_details_element.text
-                st.write(f"**Debug Row {row_index}:** {order_details_text}")  # Debug output
-                
-                details = order_details_text.split()
-                
-                # Use original parsing logic
-                if selected_status == "Order - History":
-                    # Order History has Sales Order column: Order#, Date, Part#, Qty, Sales Order, Delivery Date
-                    if len(details) >= 9:
-                        order_number = details[0]
-                        order_date = details[4]
-                        part_number = details[5]
-                        quantity = details[6]
-                        sales_order = details[7]
-                        delivery_date = details[8]
-                        data.append([order_number, order_date, part_number, quantity, sales_order, delivery_date])
-                
-                elif selected_status in ["Order - New, Requires Supplier Action", "Order - Modification, Requires Supplier Action"]:
-                    # New/Modification orders: Order#, Date, Part#, Qty, Delivery Date
-                    if len(details) >= 8:
-                        order_number = details[0]
-                        order_date = details[4]
-                        part_number = details[5]
-                        quantity = details[6]
-                        # Check if delivery date exists, otherwise calculate it
-                        if len(details) >= 8:
-                            delivery_date = details[7]
-                        else:
-                            # Calculate 18 business days from order date
-                            try:
-                                order_dt = datetime.strptime(order_date, "%m/%d/%Y")
-                                delivery_dt = business_days_from(order_dt, 18)
-                                delivery_date = delivery_dt.strftime("%m/%d/%Y")
-                            except:
-                                delivery_date = "TBD"
-                        
-                        data.append([order_number, order_date, part_number, quantity, delivery_date])
-                
-                else:
-                    # Other statuses (Ack - Sent, Ack - Accepted): Order#, Date, Part#, Qty only
-                    if len(details) >= 10:
-                        order_number = details[0]
-                        order_date = details[7]
-                        part_number = details[8]
-                        quantity = details[9]
-                        data.append([order_number, order_date, part_number, quantity])
-
-                row_index += 1
-                
-            except Exception as e:
-                st.warning(f"Error parsing row {row_index}: {str(e)}")
-                break
-
-        st.success(f"✅ Successfully extracted {len(data)} orders")
-        
-        # Return appropriate headers based on order status
-        if selected_status == "Order - History":
-            return ["Order Number", "Order Date", "Part Number", "Quantity", "Sales Order", "Delivery Date"], data
-        elif selected_status in ["Order - New, Requires Supplier Action", "Order - Modification, Requires Supplier Action"]:
-            return ["Order Number", "Order Date", "Part Number", "Quantity", "Delivery Date"], data
-        else:
-            return ["Order Number", "Order Date", "Part Number", "Quantity"], data
-
-    except Exception as e:
-        st.error(f"Scraping error: {str(e)}")
-        return [], []
-        
-    finally:
-        if driver:
-            try:
-                driver.quit()
+                options.binary_location = '/usr/bin/chromium'
             except:
-                pass
+                st.warning("Could not set chromium binary location")
+            
+            # Initialize driver with current config
+            try:
+                service = Service('/usr/bin/chromedriver')
+                driver = webdriver.Chrome(service=service, options=options)
+                st.success(f"✅ Driver created with {config['name']} config")
+            except Exception as e1:
+                st.warning(f"System chromedriver failed: {str(e1)}")
+                try:
+                    service = Service(ChromeDriverManager().install())
+                    driver = webdriver.Chrome(service=service, options=options)
+                    st.success(f"✅ Driver created with webdriver-manager")
+                except Exception as e2:
+                    st.error(f"Both drivers failed: {str(e2)}")
+                    continue
+            
+            # Set timeouts
+            driver.set_page_load_timeout(20)
+            wait = WebDriverWait(driver, 15)
+            
+            # Test basic navigation
+            st.info("🌐 Testing navigation...")
+            driver.get("https://supplierportal.swagelok.com//login.aspx")
+            st.success("✅ Successfully navigated to login page")
+            
+            # Login process
+            st.info("🔐 Attempting login...")
+            
+            username_field = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_txtUsername")))
+            password_field = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_txtPassword")))
+            go_button = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_btnGo2")))
+
+            username_field.send_keys("mstkhan")
+            password_field.send_keys("Concept350!")
+            go_button.click()
+            
+            st.success("✅ Login submitted")
+
+            # Handle terms page
+            try:
+                accept_terms_button = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_lnkAcceptTerms")))
+                accept_terms_button.click()
+                st.info("✅ Terms accepted")
+            except:
+                st.info("ℹ️ No terms page found")
+
+            # Navigate to orders
+            st.info("📦 Navigating to orders...")
+            order_application_link = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_rptPortalApplications_ctl01_lnkPortalApplication")))
+            order_application_link.click()
+            driver.switch_to.window(driver.window_handles[-1])
+            st.success("✅ Switched to orders window")
+
+            # Setup filters
+            st.info(f"🔍 Setting up filters for: {selected_status}")
+            checkbox = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_chkOrdersRequiringAction")))
+            if not checkbox.is_selected():
+                checkbox.click()
+
+            dropdown = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_cboRequestStatus")))
+            for option in dropdown.find_elements(By.TAG_NAME, "option"):
+                if option.text == selected_status:
+                    option.click()
+                    break
+
+            search_button = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContentPlaceHolder_btnSearch")))
+            search_button.click()
+            st.success("✅ Filters applied and search executed")
+
+            # Extract data
+            st.info("📊 Extracting order data...")
+            
+            data = []
+            row_index = 1
+            max_iterations = 50
+            
+            while row_index <= max_iterations:
+                try:
+                    order_details_id = f"ctl00_MainContentPlaceHolder_rptResults_ctl{row_index:02d}_trDetails"
+                    
+                    try:
+                        order_details_element = wait.until(EC.presence_of_element_located((By.ID, order_details_id)))
+                    except:
+                        # No more rows
+                        break
+                    
+                    order_details_text = order_details_element.text
+                    
+                    # Show debug info for first few rows
+                    if len(data) < 3:
+                        st.write(f"**Debug Row {row_index}:** {order_details_text}")
+                    
+                    details = order_details_text.split()
+                    
+                    # Parse based on order status (using original logic)
+                    if selected_status == "Order - History":
+                        # Order History: has Sales Order column
+                        if len(details) >= 9:
+                            order_number = details[0]
+                            order_date = details[4]
+                            part_number = details[5]
+                            quantity = details[6]
+                            sales_order = details[7]
+                            delivery_date = details[8]
+                            data.append([order_number, order_date, part_number, quantity, sales_order, delivery_date])
+                    
+                    elif selected_status in ["Order - New, Requires Supplier Action", "Order - Modification, Requires Supplier Action"]:
+                        # New/Modification orders: has delivery date
+                        if len(details) >= 8:
+                            order_number = details[0]
+                            order_date = details[4]
+                            part_number = details[5]
+                            quantity = details[6]
+                            
+                            # Check if delivery date exists
+                            if len(details) >= 8:
+                                delivery_date = details[7]
+                            else:
+                                # Calculate 18 business days from order date
+                                try:
+                                    order_dt = datetime.strptime(order_date, "%m/%d/%Y")
+                                    delivery_dt = business_days_from(order_dt, 18)
+                                    delivery_date = delivery_dt.strftime("%m/%d/%Y")
+                                except:
+                                    delivery_date = "TBD"
+                            
+                            data.append([order_number, order_date, part_number, quantity, delivery_date])
+                    
+                    else:
+                        # Other statuses: no delivery date
+                        if len(details) >= 10:
+                            order_number = details[0]
+                            order_date = details[7]
+                            part_number = details[8]
+                            quantity = details[9]
+                            data.append([order_number, order_date, part_number, quantity])
+
+                    row_index += 1
+                    
+                except Exception as e:
+                    st.warning(f"Error parsing row {row_index}: {str(e)}")
+                    break
+
+            st.success(f"✅ Successfully extracted {len(data)} orders")
+            
+            # Return appropriate headers
+            if selected_status == "Order - History":
+                return ["Order Number", "Order Date", "Part Number", "Quantity", "Sales Order", "Delivery Date"], data
+            elif selected_status in ["Order - New, Requires Supplier Action", "Order - Modification, Requires Supplier Action"]:
+                return ["Order Number", "Order Date", "Part Number", "Quantity", "Delivery Date"], data
+            else:
+                return ["Order Number", "Order Date", "Part Number", "Quantity"], data
+
+        except Exception as e:
+            st.error(f"❌ Config {config_idx + 1} failed: {str(e)}")
+            if driver:
+                try:
+                    driver.quit()
+                except:
+                    pass
+            
+            # If this is the last config, return empty
+            if config_idx == len(chrome_configs) - 1:
+                st.error("❌ All Chrome configurations failed")
+                return [], []
+            else:
+                st.info(f"🔄 Trying next configuration...")
+                continue
+        
+        finally:
+            if driver:
+                try:
+                    driver.quit()
+                except:
+                    pass
+        
+        # If we get here, this config worked
+        break
+    
+    # If we exit the loop without success
+    return [], []
 
 if __name__ == "__main__":
     main()
