@@ -771,7 +771,6 @@ def main():
             st.session_state.orders_data = None
             st.session_state.created_sos = {}
             st.session_state.last_order_status = order_status
-            st.info(f"📋 Selected: {order_status}")
         
         # Fetch orders button
         if st.button("Fetch Orders", type="primary"):
@@ -848,18 +847,11 @@ def main():
         
         # Create proper table headers based on the order status
         if len(columns) == 6:  # Order History and Order Modification format (both have Sales Order column)
-            header_cols = st.columns([0.5, 1.2, 1.2, 2, 1, 1.2, 1.5])
-            # Check if this is Order History (has delivery date display) or Order Modification (calculated delivery date)
-            if "Delivery Date" in columns:
-                headers = ["No.", "Order #", "Date", "Part Number", "Qty", "Sales Order", "Action"]
-            else:
-                headers = ["No.", "Order #", "Date", "Part Number", "Qty", "Sales Order", "Action"]
-        elif len(columns) == 5:  # Order New format (has delivery date, no sales order)
+            header_cols = st.columns([0.5, 1.2, 1.2, 2, 1, 1.2, 1.2, 1.5])
+            headers = ["No.", "Order #", "Date", "Part Number", "Qty", "Sales Order", "Delivery", "Action"]
+        else:  # Order New and other formats (5 columns - no sales order)
             header_cols = st.columns([0.5, 1.2, 1.2, 2, 1, 1.5, 1.5])
             headers = ["No.", "Order #", "Date", "Part Number", "Qty", "Delivery", "Action"]
-        else:  # Other formats (4 columns)
-            header_cols = st.columns([0.5, 1.2, 1.2, 2, 1, 1.5])
-            headers = ["No.", "Order #", "Date", "Part Number", "Qty", "Action"]
         
         # Display headers
         for i, header in enumerate(headers):
@@ -1137,11 +1129,6 @@ def fetch_swagelok_orders(selected_status):
                     break
                 
                 order_details_text = order_details_element.text
-                
-                # Show debug info for first few rows
-                if len(data) < 3:
-                    st.write(f"**Debug Row {row_index}:** {order_details_text}")
-                
                 details = order_details_text.split()
                 
                 # Parse based on the correct format for each status
@@ -1193,13 +1180,22 @@ def fetch_swagelok_orders(selected_status):
                         data.append([order_number, order_date, part_number, quantity, sales_order, delivery_date])
                 
                 else:
-                    # Other statuses: Use original logic
+                    # Other statuses: Add calculated delivery date
                     if len(details) >= 10:
                         order_number = details[0]
                         order_date = details[7]
                         part_number = details[8]
                         quantity = details[9]
-                        data.append([order_number, order_date, part_number, quantity])
+                        
+                        # Calculate delivery date (18 business days from order date)
+                        try:
+                            order_dt = datetime.strptime(order_date, "%m/%d/%Y")
+                            delivery_dt = business_days_from(order_dt, 18)
+                            delivery_date = delivery_dt.strftime("%m/%d/%Y")
+                        except:
+                            delivery_date = "TBD"
+                        
+                        data.append([order_number, order_date, part_number, quantity, delivery_date])
 
                 row_index += 1
                 
@@ -1209,7 +1205,7 @@ def fetch_swagelok_orders(selected_status):
 
         st.success(f"✅ Successfully extracted {len(data)} orders")
         
-        # Return appropriate headers
+        # Return appropriate headers - all order types now have delivery date
         if selected_status == "Order - History":
             return ["Order Number", "Order Date", "Part Number", "Quantity", "Sales Order", "Delivery Date"], data
         elif selected_status == "Order - Modification, Requires Supplier Action":
@@ -1217,7 +1213,7 @@ def fetch_swagelok_orders(selected_status):
         elif selected_status == "Order - New, Requires Supplier Action":
             return ["Order Number", "Order Date", "Part Number", "Quantity", "Delivery Date"], data
         else:
-            return ["Order Number", "Order Date", "Part Number", "Quantity"], data
+            return ["Order Number", "Order Date", "Part Number", "Quantity", "Delivery Date"], data
 
     except Exception as e:
         st.error(f"❌ Scraping error: {str(e)}")
