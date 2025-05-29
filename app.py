@@ -101,35 +101,52 @@ class UserDatabase:
             )
         ''')
         
-        # Create admin user if not exists
-        admin_exists = cursor.execute(
-            "SELECT username FROM users WHERE username = ?", ("mstkhan",)
+        # Always ensure admin user exists (force recreate if needed)
+        admin_password_hash = self.hash_password("swagelok2025")
+        cursor.execute('''
+            INSERT OR REPLACE INTO users (username, first_name, last_name, password_hash, is_admin, created_at)
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ''', ("mstkhan", "Muhammad", "Khan", admin_password_hash, True))
+        
+        conn.commit()
+        
+        # Verify admin user was created
+        admin_check = cursor.execute(
+            "SELECT username, first_name, is_admin FROM users WHERE username = ?", ("mstkhan",)
         ).fetchone()
         
-        if not admin_exists:
-            admin_password_hash = self.hash_password("swagelok2025")
-            cursor.execute('''
-                INSERT INTO users (username, first_name, last_name, password_hash, is_admin)
-                VALUES (?, ?, ?, ?, ?)
-            ''', ("mstkhan", "Muhammad", "Khan", admin_password_hash, True))
-            conn.commit()
-            # Update repo backup after creating admin
-            self.create_repo_backup()
-            
+        if admin_check:
+            print(f"✅ Admin user verified: {admin_check[0]} ({admin_check[1]}) - Admin: {admin_check[2]}")
+        else:
+            print("❌ Failed to create admin user")
+        
         conn.close()
+        
+        # Update repo backup after ensuring admin exists
+        self.create_repo_backup()
     
     def load_from_repo_backup(self):
         """Load user data from repo backup file"""
         try:
+            print(f"🔍 Looking for backup file: {self.repo_backup_path}")
+            
             if not os.path.exists(self.repo_backup_path):
+                print(f"❌ Backup file not found at: {os.path.abspath(self.repo_backup_path)}")
                 return False
+            
+            print(f"✅ Found backup file, loading...")
             
             with open(self.repo_backup_path, 'r') as f:
                 backup_data = json.load(f)
             
+            print(f"📋 Backup data keys: {list(backup_data.keys())}")
+            
             # Skip if backup is empty or invalid
             if not backup_data.get("users"):
+                print("❌ No users found in backup data")
                 return False
+            
+            print(f"👥 Found {len(backup_data['users'])} users in backup")
                 
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
@@ -148,6 +165,7 @@ class UserDatabase:
             ''')
             
             # Load users from backup
+            loaded_count = 0
             for user in backup_data["users"]:
                 cursor.execute('''
                     INSERT OR REPLACE INTO users 
@@ -162,13 +180,23 @@ class UserDatabase:
                     user.get("created_at"),
                     user.get("last_login")
                 ))
+                loaded_count += 1
+                print(f"✅ Loaded user: {user['username']} ({user['first_name']} {user['last_name']})")
             
             conn.commit()
             conn.close()
             
+            print(f"🎉 Successfully loaded {loaded_count} users from backup!")
             return True
             
+        except FileNotFoundError:
+            print(f"❌ Backup file not found: {self.repo_backup_path}")
+            return False
+        except json.JSONDecodeError as e:
+            print(f"❌ Invalid JSON in backup file: {e}")
+            return False
         except Exception as e:
+            print(f"❌ Error loading backup: {e}")
             return False
     
     def create_repo_backup(self):
@@ -259,34 +287,49 @@ class UserDatabase:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
+            # Debug: Check what users exist
+            all_users = cursor.execute("SELECT username, first_name FROM users").fetchall()
+            print(f"🔍 Available users: {all_users}")
+            
             user = cursor.execute('''
                 SELECT username, first_name, last_name, password_hash, is_admin
                 FROM users WHERE username = ?
             ''', (username,)).fetchone()
             
-            if user and self.verify_password(password, user[3]):
-                # Update last login
-                cursor.execute(
-                    "UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE username = ?",
-                    (username,)
-                )
-                conn.commit()
+            if user:
+                print(f"🔍 Found user: {user[0]} ({user[1]} {user[2]})")
+                stored_hash = user[3]
+                input_hash = self.hash_password(password)
+                print(f"🔍 Password hash match: {stored_hash == input_hash}")
+                
+                if self.verify_password(password, user[3]):
+                    # Update last login
+                    cursor.execute(
+                        "UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE username = ?",
+                        (username,)
+                    )
+                    conn.commit()
+                    conn.close()
+                    
+                    # Update repo backup after login
+                    self.create_repo_backup()
+                    
+                    return True, {
+                        'username': user[0],
+                        'first_name': user[1],
+                        'last_name': user[2],
+                        'is_admin': bool(user[4])
+                    }
+                else:
+                    conn.close()
+                    return False, "Invalid password"
+            else:
+                print(f"🔍 User '{username}' not found in database")
                 conn.close()
-                
-                # Update repo backup after login
-                self.create_repo_backup()
-                
-                return True, {
-                    'username': user[0],
-                    'first_name': user[1],
-                    'last_name': user[2],
-                    'is_admin': bool(user[4])
-                }
-            
-            conn.close()
-            return False, "Invalid username or password"
+                return False, "User not found"
             
         except Exception as e:
+            print(f"🔍 Authentication error: {str(e)}")
             return False, f"Database error: {str(e)}"
     
     def change_password(self, username, old_password, new_password):
@@ -1316,17 +1359,38 @@ def view_users_form():
         
         st.markdown("### 📋 How Repo Backup Works")
         st.markdown("""
-        **Automatic Process:**
-        - ✅ **Auto-loads** from `users_backup.json` in your repo on app start
-        - ✅ **Auto-updates** backup file after every user change
-        - ✅ **Survives rebuilds** when backup file is in your GitHub repo
+        **Important: The app CANNOT automatically commit to your GitHub repo!**
         
-        **To Make Changes Permanent:**
+        **How it actually works:**
+        1. ✅ **Auto-loads** from `users_backup.json` in your repo on app start
+        2. ✅ **Auto-creates** local backup file after user changes  
+        3. ❌ **CANNOT auto-commit** to GitHub (security limitation)
+        
+        **To Make Changes Permanent (Manual Process):**
         1. **Download** updated backup using button above
-        2. **Replace** `users_backup.json` in your GitHub repo  
-        3. **Commit & push** to GitHub
-        4. **Users persist** across all future app rebuilds!
+        2. **Manually replace** `users_backup.json` in your GitHub repo  
+        3. **Commit & push** to GitHub manually
+        4. **Users persist** across future app rebuilds!
+        
+        **Troubleshooting:**
+        - Make sure file is named `users_backup.json` (not `.jason`)
+        - File must be in the root directory of your repo
+        - Check the debug panel on login screen if users aren't loading
         """)
+        
+        # Show current backup status
+        st.markdown("### 🔍 Current Backup Status")
+        if os.path.exists("users_backup.json"):
+            try:
+                with open("users_backup.json", 'r') as f:
+                    backup_data = json.load(f)
+                user_count = len(backup_data.get("users", []))
+                backup_time = backup_data.get("backup_timestamp", "Unknown")
+                st.success(f"✅ Local backup found: {user_count} users (Updated: {backup_time})")
+            except Exception as e:
+                st.error(f"❌ Backup file corrupted: {e}")
+        else:
+            st.warning("⚠️ No local backup file found")
     else:
         st.info("No users found")
 
@@ -1349,8 +1413,109 @@ def login_form():
         st.markdown("<h2 style='text-align: center; margin-top: 1rem; font-size: 1.5rem; white-space: nowrap;'>FV - Open Orders Management System</h2>", unsafe_allow_html=True)
         st.markdown("<h3 style='text-align: center; margin-bottom: 2rem;'>🔐 Login</h3>", unsafe_allow_html=True)
         
+        # Debug info
+        with st.expander("🔧 Debug Info (Click if login issues)", expanded=False):
+            user_db = get_user_db()
+            
+            # Show file system info
+            st.write("**File System Check:**")
+            current_dir = os.getcwd()
+            st.write(f"Current directory: `{current_dir}`")
+            
+            backup_file = "users_backup.json"
+            backup_exists = os.path.exists(backup_file)
+            st.write(f"Backup file exists: `{backup_exists}`")
+            
+            if backup_exists:
+                try:
+                    with open(backup_file, 'r') as f:
+                        backup_content = json.load(f)
+                    st.write(f"Backup users: {len(backup_content.get('users', []))}")
+                    for user in backup_content.get('users', []):
+                        st.write(f"- {user['username']} ({user['first_name']} {user['last_name']})")
+                except Exception as e:
+                    st.error(f"Error reading backup: {e}")
+            
+            # Show database status
+            try:
+                conn = sqlite3.connect(user_db.db_path)
+                cursor = conn.cursor()
+                users = cursor.execute("SELECT username, first_name, is_admin FROM users").fetchall()
+                conn.close()
+                
+                st.write("**Database Users:**")
+                if users:
+                    for user in users:
+                        st.write(f"- {user[0]} ({user[1]}) - Admin: {user[2]}")
+                else:
+                    st.write("No users in database")
+                
+            except Exception as e:
+                st.error(f"Database error: {e}")
+            
+            # Manual backup restore
+            st.write("**Manual Backup Restore:**")
+            uploaded_backup = st.file_uploader(
+                "Upload your users_backup.json file",
+                type=['json'],
+                key="backup_restore"
+            )
+            
+            if uploaded_backup is not None:
+                if st.button("🔄 Restore from Uploaded Backup"):
+                    try:
+                        backup_data = json.load(uploaded_backup)
+                        
+                        conn = sqlite3.connect(user_db.db_path)
+                        cursor = conn.cursor()
+                        
+                        # Clear existing users
+                        cursor.execute("DELETE FROM users")
+                        
+                        # Load users from backup
+                        for user in backup_data.get("users", []):
+                            cursor.execute('''
+                                INSERT INTO users 
+                                (username, first_name, last_name, password_hash, is_admin, created_at, last_login)
+                                VALUES (?, ?, ?, ?, ?, ?, ?)
+                            ''', (
+                                user["username"],
+                                user["first_name"], 
+                                user["last_name"],
+                                user["password_hash"],
+                                user["is_admin"],
+                                user.get("created_at"),
+                                user.get("last_login")
+                            ))
+                        
+                        conn.commit()
+                        conn.close()
+                        
+                        st.success(f"✅ Restored {len(backup_data.get('users', []))} users!")
+                        st.rerun()
+                        
+                    except Exception as e:
+                        st.error(f"❌ Restore failed: {e}")
+            
+            # Reset admin button
+            if st.button("🔄 Reset Admin User", help="Recreate admin user with default credentials"):
+                try:
+                    conn = sqlite3.connect(user_db.db_path)
+                    cursor = conn.cursor()
+                    admin_password_hash = user_db.hash_password("swagelok2025")
+                    cursor.execute('''
+                        INSERT OR REPLACE INTO users (username, first_name, last_name, password_hash, is_admin, created_at)
+                        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    ''', ("mstkhan", "Muhammad", "Khan", admin_password_hash, True))
+                    conn.commit()
+                    conn.close()
+                    st.success("✅ Admin user reset! Try logging in now.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Reset failed: {e}")
+        
         with st.form("login_form"):
-            username = st.text_input("Username", placeholder="Enter your username")
+            username = st.text_input("Username", placeholder="Enter your username", value="mstkhan")
             password = st.text_input("Password", type="password", placeholder="Enter your password")
             
             # Center the login button
@@ -1375,6 +1540,9 @@ def login_form():
                     st.rerun()
                 else:
                     st.error(f"❌ {result}")
+                    
+                    # Show default credentials reminder
+                    st.info("💡 **Default Admin Credentials:**\nUsername: `mstkhan`\nPassword: `swagelok2025`")
 
 def logout():
     """Logout function"""
