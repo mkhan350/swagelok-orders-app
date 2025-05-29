@@ -27,16 +27,21 @@ st.set_page_config(
 API_TOKEN = st.secrets["FULCRUM_API_TOKEN"]
 BASE_URL = "https://api.fulcrumpro.us/api"
 
-# ====== DATABASE MANAGEMENT FOR USER STORAGE ======
+# ====== DATABASE MANAGEMENT WITH BACKUP SYSTEM ======
 class UserDatabase:
-    """Handles persistent user storage with SQLite"""
+    """Handles persistent user storage with SQLite and JSON backup"""
     
-    def __init__(self, db_path="swagelok_users.db"):
+    def __init__(self, db_path="swagelok_users.db", backup_path="users_backup.json"):
         self.db_path = db_path
+        self.backup_path = backup_path
         self.init_database()
     
     def init_database(self):
         """Initialize database and create tables"""
+        # Try to restore from backup if database doesn't exist
+        if not os.path.exists(self.db_path) and os.path.exists(self.backup_path):
+            self.restore_from_backup()
+        
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
@@ -67,6 +72,98 @@ class UserDatabase:
             
         conn.commit()
         conn.close()
+        
+        # Create initial backup
+        self.backup_to_json()
+    
+    def backup_to_json(self):
+        """Backup all user data to JSON file"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            users = cursor.execute('''
+                SELECT username, first_name, last_name, password_hash, is_admin, created_at, last_login
+                FROM users ORDER BY created_at DESC
+            ''').fetchall()
+            
+            # Convert to dict format
+            backup_data = {
+                "backup_timestamp": datetime.now().isoformat(),
+                "users": []
+            }
+            
+            for user in users:
+                backup_data["users"].append({
+                    "username": user[0],
+                    "first_name": user[1],
+                    "last_name": user[2],
+                    "password_hash": user[3],
+                    "is_admin": bool(user[4]),
+                    "created_at": user[5],
+                    "last_login": user[6]
+                })
+            
+            # Write backup file
+            with open(self.backup_path, 'w') as f:
+                json.dump(backup_data, f, indent=2)
+            
+            conn.close()
+            st.write(f"✅ User data backed up to {self.backup_path}")
+            
+        except Exception as e:
+            st.error(f"Backup failed: {str(e)}")
+    
+    def restore_from_backup(self):
+        """Restore user data from JSON backup"""
+        try:
+            if not os.path.exists(self.backup_path):
+                return False
+            
+            with open(self.backup_path, 'r') as f:
+                backup_data = json.load(f)
+            
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Create table if not exists
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS users (
+                    username TEXT PRIMARY KEY,
+                    first_name TEXT NOT NULL,
+                    last_name TEXT NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    is_admin BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_login TIMESTAMP
+                )
+            ''')
+            
+            # Restore users
+            for user in backup_data["users"]:
+                cursor.execute('''
+                    INSERT OR REPLACE INTO users 
+                    (username, first_name, last_name, password_hash, is_admin, created_at, last_login)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    user["username"],
+                    user["first_name"], 
+                    user["last_name"],
+                    user["password_hash"],
+                    user["is_admin"],
+                    user["created_at"],
+                    user["last_login"]
+                ))
+            
+            conn.commit()
+            conn.close()
+            
+            st.success(f"✅ Restored {len(backup_data['users'])} users from backup!")
+            return True
+            
+        except Exception as e:
+            st.error(f"Restore failed: {str(e)}")
+            return False
     
     def hash_password(self, password):
         """Hash password using SHA-256"""
@@ -77,7 +174,7 @@ class UserDatabase:
         return self.hash_password(password) == password_hash
     
     def create_user(self, username, first_name, last_name, password, is_admin=False):
-        """Create new user"""
+        """Create new user and backup"""
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
@@ -96,13 +193,17 @@ class UserDatabase:
             
             conn.commit()
             conn.close()
+            
+            # Backup after change
+            self.backup_to_json()
+            
             return True, "User created successfully"
             
         except Exception as e:
             return False, f"Database error: {str(e)}"
     
     def authenticate_user(self, username, password):
-        """Authenticate user login"""
+        """Authenticate user login and backup"""
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
@@ -121,6 +222,9 @@ class UserDatabase:
                 conn.commit()
                 conn.close()
                 
+                # Backup after login update
+                self.backup_to_json()
+                
                 return True, {
                     'username': user[0],
                     'first_name': user[1],
@@ -135,7 +239,7 @@ class UserDatabase:
             return False, f"Database error: {str(e)}"
     
     def change_password(self, username, old_password, new_password):
-        """Change user password"""
+        """Change user password and backup"""
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
@@ -158,13 +262,17 @@ class UserDatabase:
             
             conn.commit()
             conn.close()
+            
+            # Backup after change
+            self.backup_to_json()
+            
             return True, "Password changed successfully"
             
         except Exception as e:
             return False, f"Database error: {str(e)}"
     
     def get_all_users(self):
-        """Get all users (admin only)"""
+        """Get all users"""
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
@@ -180,6 +288,27 @@ class UserDatabase:
         except Exception as e:
             st.error(f"Database error: {str(e)}")
             return []
+    
+    def manual_backup(self):
+        """Manual backup trigger for admin"""
+        self.backup_to_json()
+        return "Backup completed successfully!"
+    
+    def view_backup_status(self):
+        """Show backup file status"""
+        if os.path.exists(self.backup_path):
+            try:
+                with open(self.backup_path, 'r') as f:
+                    backup_data = json.load(f)
+                
+                backup_time = backup_data.get("backup_timestamp", "Unknown")
+                user_count = len(backup_data.get("users", []))
+                
+                return f"✅ Backup exists: {user_count} users, last backup: {backup_time}"
+            except:
+                return "⚠️ Backup file exists but corrupted"
+        else:
+            return "❌ No backup file found"
 
 # Initialize database
 @st.cache_resource
@@ -410,18 +539,19 @@ def view_users_form():
 def login_form():
     """Centered login form with logo and proper title"""
     
-    # Create centered columns - narrower than before
-    col1, col2, col3 = st.columns([2, 1, 2])
+    # Create centered columns - make wider for the title
+    col1, col2, col3 = st.columns([1.5, 2, 1.5])
     
     with col2:
-        # Logo (you'll need to upload the logo file to your Streamlit app)
+        # Logo (upload this file to your GitHub repo)
         try:
             st.image("concept_insulon_logo.png", width=200)
         except:
             # Placeholder if logo file isn't found
             st.markdown("**[CONCEPT INSULON LOGO]**")
         
-        st.markdown("<h1 style='text-align: center; margin-top: 1rem;'>FV - Open Orders Management System</h1>", unsafe_allow_html=True)
+        # Single line title with smaller font size
+        st.markdown("<h2 style='text-align: center; margin-top: 1rem; font-size: 1.5rem; white-space: nowrap;'>FV - Open Orders Management System</h2>", unsafe_allow_html=True)
         st.markdown("<h3 style='text-align: center; margin-bottom: 2rem;'>🔐 Login</h3>", unsafe_allow_html=True)
         
         with st.form("login_form"):
