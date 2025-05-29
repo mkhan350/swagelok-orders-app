@@ -747,7 +747,7 @@ def main():
             st.experimental_rerun()
         return
     
-    # Sidebar for controls only
+    # Sidebar for controls and account
     with st.sidebar:
         st.header("Controls")
         
@@ -785,18 +785,43 @@ def main():
                 else:
                     st.error("❌ API connection failed")
         
+        # Separator
+        st.markdown("---")
+        
+        # Account section at bottom
+        st.header("Account")
+        
+        # Show current user info
+        st.markdown(f"**Logged in as:** {current_user['first_name']} {current_user['last_name']}")
+        st.markdown(f"**Role:** {'Administrator' if current_user['is_admin'] else 'User'}")
+        
+        # Account management buttons
+        if current_user['is_admin']:
+            if st.button("👤 Create Users", use_container_width=True):
+                st.session_state.show_create_user = True
+                st.experimental_rerun()
+            
+            if st.button("👥 View Users", use_container_width=True):
+                st.session_state.show_view_users = True
+                st.experimental_rerun()
+        
+        if st.button("🔒 Change Password", use_container_width=True):
+            st.session_state.show_change_password = True
+            st.experimental_rerun()
+        
+        if st.button("🚪 Logout", use_container_width=True):
+            logout()
+        
         # Backup status (for admins)
         if current_user['is_admin']:
             st.markdown("---")
             st.markdown("**📁 Backup Status**")
             user_db = get_user_db()
-            backup_status = user_db.view_backup_status()
-            if "✅" in backup_status:
-                st.success("Backup Active")
-            elif "⚠️" in backup_status:
-                st.warning("Backup Issue")
+            backup_exists, backup_status = user_db.get_backup_status()
+            if backup_exists:
+                st.success("✅ Repo Backup Active")
             else:
-                st.error("No Backup")
+                st.warning("⚠️ No Backup File")
     
     # Main content area
     if st.session_state.orders_data is not None:
