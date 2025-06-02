@@ -666,103 +666,55 @@ class OptimizedFulcrumAPI:
 
 # ====== OPENPYXL EXCEL INTEGRATION ======
 class OpenpyxlExcelProcessor:
-    """Handle Excel operations using openpyxl with OneDrive download support"""
+    """Handle Excel operations using openpyxl with local Excel file"""
     
     def __init__(self):
         self.price_cache = {}
-        self.excel_file_path = "configurator.xlsx"  # Local temp file name
-        self.onedrive_url = st.secrets.get("EXCEL_ONEDRIVE_URL", "")
+        self.excel_file_path = st.secrets.get("EXCEL_FILE_PATH", "SWAGELOK HOSE CONFIGURATOR (Python).xlsm")
         
-    def download_excel_from_onedrive(self):
-        """Download Excel file from OneDrive URL"""
-        if not self.onedrive_url:
-            return False, "OneDrive URL not configured"
-        
-        try:
-            # Convert OneDrive share URL to direct download URL
-            if "sharepoint.com" in self.onedrive_url or "1drv.ms" in self.onedrive_url:
-                # Handle different OneDrive URL formats
-                if "1drv.ms" in self.onedrive_url:
-                    # Short URL - need to follow redirect to get actual URL
-                    response = requests.head(self.onedrive_url, allow_redirects=True)
-                    actual_url = response.url
-                else:
-                    actual_url = self.onedrive_url
-                
-                # Convert to direct download URL
-                if "sharepoint.com" in actual_url and "guestaccess.aspx" in actual_url:
-                    # Replace guestaccess.aspx with download.aspx
-                    download_url = actual_url.replace("guestaccess.aspx", "download.aspx")
-                elif "onedrive.live.com" in actual_url:
-                    # OneDrive personal link format
-                    download_url = actual_url.replace("view.aspx", "download.aspx")
-                else:
-                    download_url = actual_url
-            else:
-                download_url = self.onedrive_url
-            
-            # Download the file
-            response = requests.get(download_url, timeout=30)
-            response.raise_for_status()
-            
-            # Save to local temp file
-            with open(self.excel_file_path, 'wb') as f:
-                f.write(response.content)
-            
-            return True, "File downloaded successfully"
-            
-        except Exception as e:
-            return False, f"Download failed: {str(e)}"
-    
     def lookup_part_data(self, part_number):
         """
         Lookup part data from Excel using openpyxl
+        Your VBA macro runs automatically when we write to C5!
         Returns: (price, description, bom_items, operations, success, error_message)
         """
         if part_number in self.price_cache:
             cached_result = self.price_cache[part_number]
             return cached_result + (True, "Using cached data")
         
-        # Step 1: Download from OneDrive if URL is configured
-        if self.onedrive_url:
-            download_success, download_msg = self.download_excel_from_onedrive()
-            if not download_success:
-                error_msg = f"Failed to download Excel file from OneDrive: {download_msg}"
-                return None, None, [], [], False, error_msg
-        
-        # Step 2: Check if local file exists
         if not os.path.exists(self.excel_file_path):
-            if self.onedrive_url:
-                error_msg = f"Excel file download failed. OneDrive URL may be incorrect or file not accessible."
-            else:
-                error_msg = f"Excel file not found: {self.excel_file_path}. Please add EXCEL_ONEDRIVE_URL to secrets or place 'configurator.xlsx' in the app directory."
+            error_msg = f"Excel file not found: {self.excel_file_path}. Please upload 'SWAGELOK HOSE CONFIGURATOR (Python).xlsm' to your repository."
             return None, None, [], [], False, error_msg
         
         try:
-            # Step 1: Load workbook
+            # Step 1: Load workbook (preserve VBA)
             workbook = load_workbook(self.excel_file_path, keep_vba=True)
             
             # Check if Sheet1 exists
             if "Sheet1" not in workbook.sheetnames:
                 error_msg = "Sheet1 not found in Excel file. Please ensure your Excel file has a 'Sheet1' worksheet."
+                workbook.close()
                 return None, None, [], [], False, error_msg
             
             worksheet = workbook["Sheet1"]
             
-            # Step 2: Update cell C5 with part number (this should trigger the macro automatically)
+            # Step 2: Write part number to C5 (this triggers your VBA macro automatically!)
             worksheet["C5"] = part_number
             
-            # Step 3: Save to trigger macro (if the macro is set to run on change)
+            # Step 3: Save the file to trigger the Worksheet_Change event
             workbook.save(self.excel_file_path)
+            workbook.close()
             
-            # Step 4: Wait for macro to complete
+            # Step 4: Wait for VBA macro to complete
             time.sleep(3)  # Give the macro time to run
             
-            # Step 5: Reload the workbook to get updated values
+            # Step 5: Reload the workbook to get updated values (data_only=True for calculated values)
             workbook = load_workbook(self.excel_file_path, data_only=True)
             worksheet = workbook["Sheet1"]
             
-            # Step 6: Get price from C13
+            # Step 6: Read results from output cells
+            
+            # Get price from C13
             price_value = worksheet["C13"].value
             price = None
             if price_value is not None:
@@ -771,11 +723,11 @@ class OpenpyxlExcelProcessor:
                 except (ValueError, TypeError):
                     price = None
             
-            # Step 7: Get description from C14
+            # Get description from C14
             description_value = worksheet["C14"].value
             description = str(description_value) if description_value else f"Swagelok Part {part_number}"
             
-            # Step 8: Get BOM items from J14:M25
+            # Get BOM items from J14:M25
             bom_items = []
             for row in range(14, 26):  # J14:M25
                 j_value = worksheet[f"J{row}"].value  # Part name
@@ -792,7 +744,7 @@ class OpenpyxlExcelProcessor:
                     except (ValueError, TypeError):
                         continue
             
-            # Step 9: Get operations from M36:L40 (M column for operation ID, L column for labor time)
+            # Get operations from M36:L40 (M column for operation ID, L column for labor time)
             operations = []
             for row in range(36, 41):  # M36:L40
                 operation_id = worksheet[f"M{row}"].value  # Operation ID
@@ -811,7 +763,7 @@ class OpenpyxlExcelProcessor:
             workbook.close()
             
             if price is None:
-                error_msg = "Excel processing completed but no price was returned. This might indicate the macro didn't run properly or the part number wasn't found."
+                error_msg = "Excel processing completed but no price was returned. This might indicate the VBA macro didn't run properly or the part number wasn't found."
                 return None, None, [], [], False, error_msg
             
             # Cache successful result
@@ -822,7 +774,7 @@ class OpenpyxlExcelProcessor:
             return price, description, bom_items, operations, True, success_msg
             
         except PermissionError:
-            error_msg = "Excel file is open in another application. Please close the Excel file and try again."
+            error_msg = "Excel file is being used by another process. If you have the file open in Excel, please close it and try again."
             return None, None, [], [], False, error_msg
         except Exception as e:
             error_msg = f"Excel processing error: {str(e)}"
@@ -1778,56 +1730,57 @@ def main():
         
         # Check Excel configuration
         excel_processor = get_openpyxl_excel_processor()
-        has_onedrive_url = bool(excel_processor.onedrive_url)
-        has_local_file = os.path.exists(excel_processor.excel_file_path)
-        excel_configured = has_onedrive_url or has_local_file
+        excel_configured = os.path.exists(excel_processor.excel_file_path)
         
         if excel_configured:
-            if has_onedrive_url:
-                st.success("✅ OneDrive Excel Integration Configured")
-                st.info("☁️ Downloads Excel file from OneDrive")
-            else:
-                st.success("✅ Local Excel File Configured")
-                st.info("📁 Uses local Excel file")
+            st.success("✅ Excel File Configured")
+            st.info("📁 Local Excel file with VBA macro support")
             
             # Test file access
             if st.button("🔗 Test Excel File Access", key="test_excel"):
                 with st.spinner("Testing Excel file access..."):
-                    if has_onedrive_url:
-                        # Test OneDrive download
-                        download_success, download_msg = excel_processor.download_excel_from_onedrive()
-                        if download_success:
-                            st.success("✅ OneDrive download successful!")
-                            # Test Excel file structure
+                    try:
+                        workbook = load_workbook(excel_processor.excel_file_path, keep_vba=True)
+                        if "Sheet1" in workbook.sheetnames:
+                            st.success("✅ Excel file access successful!")
+                            st.info(f"Found Sheet1 with {workbook['Sheet1'].max_row} rows")
+                            
+                            # Test key cells
+                            worksheet = workbook["Sheet1"]
+                            st.info("📋 Testing key cell locations:")
+                            
+                            # Check if we can read/write to C5
                             try:
-                                workbook = load_workbook(excel_processor.excel_file_path)
-                                if "Sheet1" in workbook.sheetnames:
-                                    st.info(f"Found Sheet1 with {workbook['Sheet1'].max_row} rows")
-                                else:
-                                    st.error("❌ Sheet1 not found in Excel file")
-                                workbook.close()
-                            except Exception as e:
-                                st.error(f"❌ Excel file structure error: {str(e)}")
+                                test_value = worksheet["C5"].value
+                                st.write(f"• C5 (part input): {test_value if test_value else 'Empty ✓'}")
+                            except:
+                                st.write("• C5 (part input): ❌ Cannot access")
+                            
+                            # Check output cells
+                            try:
+                                price_value = worksheet["C13"].value  
+                                desc_value = worksheet["C14"].value
+                                st.write(f"• C13 (price output): {price_value if price_value else 'Empty'}")
+                                st.write(f"• C14 (description): {desc_value if desc_value else 'Empty'}")
+                            except:
+                                st.write("• C13/C14: ❌ Cannot access output cells")
+                            
+                            st.success("🎉 Excel integration ready!")
+                            st.info("💡 **How it works:** When app writes to C5, your VBA Worksheet_Change event will trigger automatically!")
                         else:
-                            st.error(f"❌ OneDrive download failed: {download_msg}")
-                    else:
-                        # Test local file
-                        try:
-                            workbook = load_workbook(excel_processor.excel_file_path)
-                            if "Sheet1" in workbook.sheetnames:
-                                st.success("✅ Local Excel file access successful!")
-                                st.info(f"Found Sheet1 with {workbook['Sheet1'].max_row} rows")
-                            else:
-                                st.error("❌ Sheet1 not found in Excel file")
-                            workbook.close()
-                        except PermissionError:
-                            st.error("❌ Excel file is open in another application")
-                        except Exception as e:
-                            st.error(f"❌ Excel file access failed: {str(e)}")
+                            st.error("❌ Sheet1 not found in Excel file")
+                            st.write(f"Available sheets: {workbook.sheetnames}")
+                        workbook.close()
+                    except PermissionError:
+                        st.error("❌ Excel file is open in another application")
+                        st.info("Close Excel and try again")
+                    except Exception as e:
+                        st.error(f"❌ Excel file access failed: {str(e)}")
         else:
-            st.error("❌ Excel file not configured")
+            st.error("❌ Excel file not found")
             st.warning("⚠️ Manual pricing only")
-            st.info("📁 Add EXCEL_ONEDRIVE_URL to secrets or place 'configurator.xlsx' in app directory")
+            st.info(f"📁 Looking for: {excel_processor.excel_file_path}")
+            st.info("💡 Upload your 'SWAGELOK HOSE CONFIGURATOR (Python).xlsm' file to the repository root directory")
         
         # Show configuration help
         with st.expander("🔧 Configuration Help"):
@@ -2153,12 +2106,7 @@ def main():
         
         with col2:
             excel_processor = get_openpyxl_excel_processor()
-            if excel_processor.onedrive_url:
-                excel_status = "✅ OneDrive Excel Configured"
-            elif os.path.exists(excel_processor.excel_file_path):
-                excel_status = "✅ Local Excel File Found"
-            else:
-                excel_status = "❌ Excel Not Configured"
+            excel_status = "✅ Excel File Found" if os.path.exists(excel_processor.excel_file_path) else "❌ Excel File Missing"
             st.info(f"📊 **Excel Integration:** {excel_status}")
         
         # Instructions only
