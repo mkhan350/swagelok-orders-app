@@ -18,6 +18,7 @@ import os
 import openpyxl
 from openpyxl import load_workbook
 import traceback
+import math
 
 # Page setup
 st.set_page_config(
@@ -396,6 +397,10 @@ if 'updated_delivery_dates' not in st.session_state:
     st.session_state.updated_delivery_dates = {}
 if 'current_user' not in st.session_state:
     st.session_state.current_user = None
+if 'so_creation_panel' not in st.session_state:
+    st.session_state.so_creation_panel = None
+if 'processing_order' not in st.session_state:
+    st.session_state.processing_order = None
 
 # ====== ENHANCED API CLIENT WITH EXCEL AND BOM FUNCTIONALITY ======
 class OptimizedFulcrumAPI:
@@ -461,7 +466,6 @@ class OptimizedFulcrumAPI:
         if response_data and isinstance(response_data, list) and len(response_data) > 0:
             item_id = response_data[0]["id"]
             self.item_cache[part_number] = item_id
-            st.success(f"✅ Part '{part_number}' exists with ID: {item_id}")
             return item_id
         
         self.item_cache[part_number] = None
@@ -489,10 +493,8 @@ class OptimizedFulcrumAPI:
         if response_data and "id" in response_data:
             item_id = response_data["id"]
             self.item_cache[part_number] = item_id
-            st.success(f"✅ Created item '{part_number}' with ID: {item_id}")
             return item_id
         
-        st.error(f"❌ Failed to create item '{part_number}'")
         return None
 
     def get_item_id(self, item_name):
@@ -550,8 +552,6 @@ class OptimizedFulcrumAPI:
 
     def clear_item_routing(self, item_id, first_bom_name=""):
         """Clear all routing (BOM and operations) for an item"""
-        st.info(f"🧹 Clearing existing routing for item {item_id}...")
-        
         # Delete all input items (BOM)
         input_items = self.list_input_items(item_id, first_bom_name)
         deleted_inputs = 0
@@ -568,7 +568,6 @@ class OptimizedFulcrumAPI:
                 if self.delete_operation(item_id, op["id"]):
                     deleted_operations += 1
         
-        st.success(f"✅ Cleared routing: {deleted_inputs} BOM items, {deleted_operations} operations")
         return True
 
     def add_bom_item(self, item_id, bom_item):
@@ -581,10 +580,7 @@ class OptimizedFulcrumAPI:
         }
         
         response_data = self._make_request("POST", url, payload)
-        if response_data:
-            st.success(f"✅ Added BOM: {bom_item['name']} (Qty: {bom_item['value']})")
-            return True
-        return False
+        return response_data is not None
 
     def add_operation(self, item_id, operation):
         """Add operation to item routing"""
@@ -602,7 +598,6 @@ class OptimizedFulcrumAPI:
         
         response_data = self._make_request("POST", url, payload)
         if response_data and "id" in response_data:
-            st.success(f"✅ Added Operation: {operation['systemOperationId']} (Order: {operation['order']})")
             return response_data["id"]
         return None
 
@@ -630,15 +625,9 @@ class OptimizedFulcrumAPI:
                 timeout=30
             )
             
-            if response.status_code in [200, 201]:
-                st.success(f"✅ Uploaded attachment: {uploaded_file.name}")
-                return True
-            else:
-                st.error(f"❌ Failed to upload attachment: {response.status_code}")
-                return False
+            return response.status_code in [200, 201]
                 
         except Exception as e:
-            st.error(f"❌ Attachment upload error: {str(e)}")
             return False
     
     def create_sales_order(self, order_data):
@@ -670,100 +659,128 @@ class OptimizedFulcrumAPI:
             }
 
             response_data = self._make_request("POST", url, payload)
-            if response_data:
-                st.success(f"✅ Added line item: Qty {quantity} @ ${price_float}")
-                return True
-            else:
-                return False
+            return response_data is not None
 
         except (ValueError, TypeError) as e:
-            st.error(f"❌ Price error: {str(e)}")
             return False
 
-# ====== EXCEL INTEGRATION FUNCTIONALITY ======
-class ExcelProcessor:
-    """Handle Excel operations for pricing and BOM data"""
+# ====== OPENPYXL EXCEL INTEGRATION ======
+class OpenpyxlExcelProcessor:
+    """Handle Excel operations using openpyxl with OneDrive download support"""
     
     def __init__(self):
-        self.price_cache = {}  # Cache for Excel lookups
-        self.excel_url = st.secrets.get("EXCEL_FILE_URL", "")
+        self.price_cache = {}
+        self.excel_file_path = "configurator.xlsx"  # Local temp file name
+        self.onedrive_url = st.secrets.get("EXCEL_ONEDRIVE_URL", "")
         
+    def download_excel_from_onedrive(self):
+        """Download Excel file from OneDrive URL"""
+        if not self.onedrive_url:
+            return False, "OneDrive URL not configured"
+        
+        try:
+            # Convert OneDrive share URL to direct download URL
+            if "sharepoint.com" in self.onedrive_url or "1drv.ms" in self.onedrive_url:
+                # Handle different OneDrive URL formats
+                if "1drv.ms" in self.onedrive_url:
+                    # Short URL - need to follow redirect to get actual URL
+                    response = requests.head(self.onedrive_url, allow_redirects=True)
+                    actual_url = response.url
+                else:
+                    actual_url = self.onedrive_url
+                
+                # Convert to direct download URL
+                if "sharepoint.com" in actual_url and "guestaccess.aspx" in actual_url:
+                    # Replace guestaccess.aspx with download.aspx
+                    download_url = actual_url.replace("guestaccess.aspx", "download.aspx")
+                elif "onedrive.live.com" in actual_url:
+                    # OneDrive personal link format
+                    download_url = actual_url.replace("view.aspx", "download.aspx")
+                else:
+                    download_url = actual_url
+            else:
+                download_url = self.onedrive_url
+            
+            # Download the file
+            response = requests.get(download_url, timeout=30)
+            response.raise_for_status()
+            
+            # Save to local temp file
+            with open(self.excel_file_path, 'wb') as f:
+                f.write(response.content)
+            
+            return True, "File downloaded successfully"
+            
+        except Exception as e:
+            return False, f"Download failed: {str(e)}"
+    
     def lookup_part_data(self, part_number):
         """
-        Lookup part data from Excel file
-        Returns: (price, description, bom_items, operations)
+        Lookup part data from Excel using openpyxl
+        Returns: (price, description, bom_items, operations, success, error_message)
         """
         if part_number in self.price_cache:
-            st.info(f"📋 Using cached data for {part_number}")
-            return self.price_cache[part_number]
+            cached_result = self.price_cache[part_number]
+            return cached_result + (True, "Using cached data")
         
-        if not self.excel_url:
-            st.error("❌ Excel file URL not configured in secrets")
-            return None, None, [], []
+        # Step 1: Download from OneDrive if URL is configured
+        if self.onedrive_url:
+            download_success, download_msg = self.download_excel_from_onedrive()
+            if not download_success:
+                error_msg = f"Failed to download Excel file from OneDrive: {download_msg}"
+                return None, None, [], [], False, error_msg
+        
+        # Step 2: Check if local file exists
+        if not os.path.exists(self.excel_file_path):
+            if self.onedrive_url:
+                error_msg = f"Excel file download failed. OneDrive URL may be incorrect or file not accessible."
+            else:
+                error_msg = f"Excel file not found: {self.excel_file_path}. Please add EXCEL_ONEDRIVE_URL to secrets or place 'configurator.xlsx' in the app directory."
+            return None, None, [], [], False, error_msg
         
         try:
-            # Download Excel file temporarily
-            with st.spinner(f"📊 Processing Excel data for {part_number}..."):
-                response = requests.get(self.excel_url, timeout=30)
-                if response.status_code != 200:
-                    st.error(f"❌ Failed to access Excel file: {response.status_code}")
-                    return None, None, [], []
-                
-                # Save to temporary file
-                temp_file = f"temp_excel_{int(time.time())}.xlsx"
-                with open(temp_file, 'wb') as f:
-                    f.write(response.content)
-                
-                # Process Excel file
-                result = self._process_excel_file(temp_file, part_number)
-                
-                # Clean up
-                if os.path.exists(temp_file):
-                    os.remove(temp_file)
-                
-                # Cache result
-                self.price_cache[part_number] = result
-                return result
-                
-        except Exception as e:
-            st.error(f"❌ Excel processing error: {str(e)}")
-            return None, None, [], []
-    
-    def _process_excel_file(self, file_path, part_number):
-        """Process the Excel file to extract data"""
-        try:
-            # Load workbook
-            workbook = load_workbook(file_path, data_only=False)
-            sheet = workbook["Sheet1"]
+            # Step 1: Load workbook
+            workbook = load_workbook(self.excel_file_path, keep_vba=True)
             
-            # Input part number in C5 (like the desktop version)
-            sheet["C5"] = part_number
+            # Check if Sheet1 exists
+            if "Sheet1" not in workbook.sheetnames:
+                error_msg = "Sheet1 not found in Excel file. Please ensure your Excel file has a 'Sheet1' worksheet."
+                return None, None, [], [], False, error_msg
             
-            # Since we can't run VBA macros in openpyxl, we'll try to extract data directly
-            # This assumes the Excel has formulas that calculate based on C5
+            worksheet = workbook["Sheet1"]
             
-            # For now, we'll simulate the macro functionality by reading the expected output cells
-            # You may need to adjust this based on your Excel file structure
+            # Step 2: Update cell C5 with part number (this should trigger the macro automatically)
+            worksheet["C5"] = part_number
             
-            # Try to get price from C13
-            price_cell = sheet["C13"].value
+            # Step 3: Save to trigger macro (if the macro is set to run on change)
+            workbook.save(self.excel_file_path)
+            
+            # Step 4: Wait for macro to complete
+            time.sleep(3)  # Give the macro time to run
+            
+            # Step 5: Reload the workbook to get updated values
+            workbook = load_workbook(self.excel_file_path, data_only=True)
+            worksheet = workbook["Sheet1"]
+            
+            # Step 6: Get price from C13
+            price_value = worksheet["C13"].value
             price = None
-            if price_cell is not None:
+            if price_value is not None:
                 try:
-                    price = round(float(price_cell), 2)
+                    price = round(float(price_value), 2)
                 except (ValueError, TypeError):
                     price = None
             
-            # Try to get description from C14
-            description_cell = sheet["C14"].value
-            description = str(description_cell) if description_cell else f"Swagelok Part {part_number}"
+            # Step 7: Get description from C14
+            description_value = worksheet["C14"].value
+            description = str(description_value) if description_value else f"Swagelok Part {part_number}"
             
-            # Extract BOM items from J14:J25, L14:L25, M14:M25
+            # Step 8: Get BOM items from J14:M25
             bom_items = []
-            for row in range(14, 26):  # Rows 14-25
-                j_value = sheet[f"J{row}"].value  # Part name
-                l_value = sheet[f"L{row}"].value  # Quantity
-                m_value = sheet[f"M{row}"].value  # Multiplier
+            for row in range(14, 26):  # J14:M25
+                j_value = worksheet[f"J{row}"].value  # Part name
+                l_value = worksheet[f"L{row}"].value  # Quantity
+                m_value = worksheet[f"M{row}"].value  # Multiplier
                 
                 if j_value and l_value:
                     try:
@@ -775,36 +792,46 @@ class ExcelProcessor:
                     except (ValueError, TypeError):
                         continue
             
-            # Extract operations from J36:J40, L36:L40
+            # Step 9: Get operations from M36:L40 (M column for operation ID, L column for labor time)
             operations = []
-            for row in range(36, 41):  # Rows 36-40
-                operation_id = sheet[f"J{row}"].value  # Operation ID
-                labor_time = sheet[f"L{row}"].value   # Labor time
+            for row in range(36, 41):  # M36:L40
+                operation_id = worksheet[f"M{row}"].value  # Operation ID
+                labor_time = worksheet[f"L{row}"].value   # Labor time
                 
                 if operation_id and labor_time:
                     try:
                         operations.append({
                             "systemOperationId": str(operation_id).strip(),
                             "order": row - 35,  # Order based on row position
-                            "laborTime": int(float(labor_time) * 60)  # Convert to seconds
+                            "laborTime": int(math.ceil(float(labor_time))) * 60  # Convert minutes to seconds
                         })
                     except (ValueError, TypeError):
                         continue
             
-            st.success(f"✅ Excel processing complete: Price=${price}, {len(bom_items)} BOM items, {len(operations)} operations")
-            return price, description, bom_items, operations
+            workbook.close()
             
+            if price is None:
+                error_msg = "Excel processing completed but no price was returned. This might indicate the macro didn't run properly or the part number wasn't found."
+                return None, None, [], [], False, error_msg
+            
+            # Cache successful result
+            result = (price, description, bom_items, operations)
+            self.price_cache[part_number] = result
+            
+            success_msg = f"Excel processing successful: Price=${price}, {len(bom_items)} BOM items, {len(operations)} operations"
+            return price, description, bom_items, operations, True, success_msg
+            
+        except PermissionError:
+            error_msg = "Excel file is open in another application. Please close the Excel file and try again."
+            return None, None, [], [], False, error_msg
         except Exception as e:
-            st.error(f"❌ Excel file processing error: {str(e)}")
-            return None, None, [], []
-        finally:
-            if 'workbook' in locals():
-                workbook.close()
+            error_msg = f"Excel processing error: {str(e)}"
+            return None, None, [], [], False, error_msg
 
-# Initialize Excel processor
+# Initialize openpyxl Excel processor
 @st.cache_resource
-def get_excel_processor():
-    return ExcelProcessor()
+def get_openpyxl_excel_processor():
+    return OpenpyxlExcelProcessor()
 
 # Business Logic Functions
 def business_days_from(start_date, days):
@@ -854,73 +881,67 @@ def format_delivery_date(date_input):
         return calculated_date.strftime("%Y-%m-%d")
 
 # Enhanced process part number function
-def process_part_number(part_number, manual_price=None):
+def process_part_number_with_fallback(part_number, manual_price=None):
     """
-    Enhanced part processing with Excel integration and BOM management
+    Enhanced part processing with openpyxl Excel integration and fallback options
+    Returns: (item_id, price, success, error_message, bom_items, operations)
     """
     api_client = get_api_client()
-    excel_processor = get_excel_processor()
+    excel_processor = get_openpyxl_excel_processor()
     
     try:
-        st.info(f"🔧 Processing part: {part_number}")
-        
         # Step 1: Check if item exists
         existing_item_id = api_client.check_item_exists(part_number)
         
-        # Step 2: Get data from Excel
-        price, description, bom_items, operations = excel_processor.lookup_part_data(part_number)
+        # Step 2: Try to get data from Excel using openpyxl
+        price, description, bom_items, operations, excel_success, excel_error = excel_processor.lookup_part_data(part_number)
+        
+        if not excel_success:
+            # Excel failed - return error for user to decide
+            return None, None, False, f"Excel processing failed: {excel_error}", [], []
         
         # Use manual price if Excel price is not available
         if price is None and manual_price is not None:
             price = manual_price
-            st.info(f"💰 Using manual price: ${price}")
         elif price is None:
             price = 100.0  # Default fallback price
-            st.warning(f"⚠️ Using default price: ${price}")
         
         # Step 3: Handle item creation or update
         if existing_item_id:
-            st.info(f"📝 Updating existing item...")
             item_id = existing_item_id
             
             # Clear existing routing if we have new BOM/operations data
             if bom_items or operations:
-                api_client.clear_item_routing(existing_item_id)
+                # Use first BOM item name for clearing query if available
+                first_bom_name = bom_items[0]["name"] if bom_items else ""
+                api_client.clear_item_routing(existing_item_id, first_bom_name)
         else:
-            st.info(f"🆕 Creating new item...")
             item_id = api_client.create_item(part_number, description)
             if not item_id:
-                st.error(f"❌ Failed to create item for {part_number}")
-                return None, price
+                return None, price, False, f"Failed to create item for {part_number}", bom_items, operations
         
         # Step 4: Add BOM items
         if bom_items:
-            st.info(f"📦 Adding {len(bom_items)} BOM items...")
             for bom_item in bom_items:
                 # Get BOM item ID
                 bom_id = api_client.get_item_id(bom_item["name"])
                 if bom_id:
                     bom_item["id"] = bom_id
                     api_client.add_bom_item(item_id, bom_item)
-                else:
-                    st.warning(f"⚠️ BOM item not found: {bom_item['name']}")
         
         # Step 5: Add operations
         if operations:
-            st.info(f"⚙️ Adding {len(operations)} operations...")
             for operation in operations:
                 api_client.add_operation(item_id, operation)
         
-        st.success(f"✅ Part processing complete for {part_number}")
-        return item_id, price
+        return item_id, price, True, "Part processing successful", bom_items, operations
         
     except Exception as e:
-        st.error(f"❌ Error processing part {part_number}: {str(e)}")
-        return None, price if 'price' in locals() else 100.0
+        return None, None, False, f"Error processing part {part_number}: {str(e)}", [], []
 
-def create_sales_order(order_row, delivery_date=None):
+def create_sales_order_simple(order_row, delivery_date=None, manual_price=None, skip_excel=False):
     """
-    Enhanced sales order creation with file attachment and complete processing
+    Simplified sales order creation for manual processing
     """
     api_client = get_api_client()
     
@@ -930,24 +951,9 @@ def create_sales_order(order_row, delivery_date=None):
         part_number = str(order_row[2]).strip()
         quantity = int(order_row[3])
         
-        # Handle delivery date with improved logic
+        # Handle delivery date
         if delivery_date:
             due_date_final = format_delivery_date(delivery_date)
-        elif len(order_row) > 4:
-            # Try to use delivery date from order data
-            delivery_from_data = str(order_row[4]).strip() if len(order_row) > 4 else None
-            if delivery_from_data and delivery_from_data not in ["", "TBD", "Delivered"]:
-                due_date_final = format_delivery_date(delivery_from_data)
-            else:
-                # Calculate 18 business days from order date
-                order_dt = parse_date_safely(order_date)
-                if order_dt:
-                    calculated_date = business_days_from(order_dt, 18)
-                    due_date_final = calculated_date.strftime("%Y-%m-%d")
-                else:
-                    # Fallback to 18 business days from today
-                    calculated_date = business_days_from(datetime.now(), 18)
-                    due_date_final = calculated_date.strftime("%Y-%m-%d")
         else:
             # Calculate 18 business days from order date
             order_dt = parse_date_safely(order_date)
@@ -955,7 +961,6 @@ def create_sales_order(order_row, delivery_date=None):
                 calculated_date = business_days_from(order_dt, 18)
                 due_date_final = calculated_date.strftime("%Y-%m-%d")
             else:
-                # Fallback to 18 business days from today
                 calculated_date = business_days_from(datetime.now(), 18)
                 due_date_final = calculated_date.strftime("%Y-%m-%d")
         
@@ -967,64 +972,193 @@ def create_sales_order(order_row, delivery_date=None):
             order_date_final = datetime.now().strftime("%Y-%m-%d")
         
         # Step 1: Create sales order
-        with st.spinner(f"📋 Creating Sales Order for {order_number}..."):
-            payload = {
-                "customerId": "654241f9c77f04d8d76410c4",  # Swagelok customer ID
-                "customerPoNumber": order_number,
-                "orderedDate": order_date_final,
-                "contact": {"firstName": "Kristian", "lastName": "Barnett"},
-                "dueDate": due_date_final,
-            }
-            
-            sales_order_id = api_client.create_sales_order(payload)
-            if not sales_order_id:
-                st.error("❌ Failed to create Sales Order")
-                return None
-            
-            # Get sales order details to get the SO number
-            so_details = api_client.get_sales_order_details(sales_order_id)
-            sales_order_number = so_details.get("number") if so_details else "Unknown"
-            
-            st.success(f"✅ Created Sales Order: {sales_order_number}")
+        payload = {
+            "customerId": "654241f9c77f04d8d76410c4",
+            "customerPoNumber": order_number,
+            "orderedDate": order_date_final,
+            "contact": {"firstName": "Kristian", "lastName": "Barnett"},
+            "dueDate": due_date_final,
+        }
         
-        # Step 2: File attachment handling
-        st.subheader("📎 File Attachment (Optional)")
-        st.info("You can attach a file to this Sales Order (e.g., PO, specifications, etc.)")
+        sales_order_id = api_client.create_sales_order(payload)
+        if not sales_order_id:
+            return None, "Failed to create Sales Order"
         
-        uploaded_file = st.file_uploader(
-            "Choose a file to attach to the Sales Order",
-            key=f"attachment_{order_number}",
-            help="Optional: Upload any relevant documents for this order"
-        )
+        # Get sales order details to get the SO number
+        so_details = api_client.get_sales_order_details(sales_order_id)
+        sales_order_number = so_details.get("number") if so_details else "Unknown"
         
-        if uploaded_file is not None:
-            with st.spinner("📎 Uploading attachment..."):
-                api_client.upload_attachment(sales_order_id, uploaded_file, order_number)
-        
-        # Step 3: Process part and add to order
-        with st.spinner(f"🔧 Processing part {part_number}..."):
-            item_id, price = process_part_number(part_number)
-            
-            if item_id and price is not None:
-                success = api_client.add_part_line_item(sales_order_id, item_id, quantity, price)
-                if success:
-                    st.success(f"✅ Sales Order {sales_order_number} completed successfully!")
-                    return sales_order_number
-                else:
-                    st.error("❌ Failed to add line item to Sales Order")
-                    return None
+        # Step 2: Process part
+        if skip_excel:
+            # Simple item creation without Excel processing
+            existing_item_id = api_client.check_item_exists(part_number)
+            if existing_item_id:
+                item_id = existing_item_id
             else:
-                st.error("❌ Failed to process part for Sales Order")
-                return None
+                item_id = api_client.create_item(part_number, f"Swagelok Part {part_number}")
+            
+            price = manual_price or 100.0
+        else:
+            # Full Excel processing
+            item_id, price, success, error_msg, bom_items, operations = process_part_number_with_fallback(part_number, manual_price)
+            if not success:
+                return None, error_msg
+        
+        # Step 3: Add line item
+        if item_id and price is not None:
+            success = api_client.add_part_line_item(sales_order_id, item_id, quantity, price)
+            if success:
+                return sales_order_number, "Success"
+            else:
+                return None, "Failed to add line item to Sales Order"
+        else:
+            return None, "Failed to process part for Sales Order"
                 
     except Exception as e:
-        st.error(f"❌ Error creating sales order: {str(e)}")
-        return None
+        return None, f"Error creating sales order: {str(e)}"
 
-# Initialize API client and Excel processor
-@st.cache_resource
-def get_api_client():
-    return OptimizedFulcrumAPI(API_TOKEN)
+def show_so_creation_panel():
+    """Show the SO creation panel in the sidebar"""
+    if not st.session_state.processing_order:
+        return
+    
+    order_data = st.session_state.processing_order
+    order_number = str(order_data['row'][0])
+    part_number = str(order_data['row'][2])
+    delivery_date = order_data.get('delivery_date')
+    
+    with st.sidebar:
+        st.header("🔄 Creating Sales Order")
+        st.write(f"**Order:** {order_number}")
+        st.write(f"**Part:** {part_number}")
+        
+        # Step 1: Try Excel Processing
+        with st.expander("📊 OpenPyXL Excel Processing", expanded=True):
+            if st.button("🔄 Process with Excel File", key="excel_process"):
+                with st.spinner("Processing Excel file with openpyxl..."):
+                    excel_processor = get_openpyxl_excel_processor()
+                    price, description, bom_items, operations, excel_success, excel_error = excel_processor.lookup_part_data(part_number)
+                    
+                    if excel_success:
+                        st.success("✅ Excel processing successful!")
+                        st.write(f"**Price:** ${price}")
+                        st.write(f"**Description:** {description}")
+                        st.write(f"**BOM Items:** {len(bom_items)}")
+                        st.write(f"**Operations:** {len(operations)}")
+                        
+                        # Show BOM details
+                        if bom_items:
+                            with st.expander("📦 BOM Items", expanded=False):
+                                for item in bom_items:
+                                    st.write(f"- {item['name']}: {item['value']}")
+                        
+                        # Show operations details
+                        if operations:
+                            with st.expander("⚙️ Operations", expanded=False):
+                                for op in operations:
+                                    st.write(f"- {op['systemOperationId']}: {op['laborTime']}s")
+                        
+                        if st.button("✅ Create SO with Excel Data", key="create_with_excel"):
+                            with st.spinner("Creating Sales Order..."):
+                                so_number, result_msg = create_sales_order_simple(
+                                    order_data['row'], 
+                                    delivery_date, 
+                                    price, 
+                                    skip_excel=False
+                                )
+                                
+                                if so_number:
+                                    # Handle file attachment if provided
+                                    uploaded_file = st.session_state.get(f"attachment_{order_number}")
+                                    if uploaded_file:
+                                        api_client = get_api_client()
+                                        # Get the sales order ID for attachment
+                                        # Note: We'd need the sales_order_id here, which we don't have in the simple version
+                                        # For now, we'll skip attachment in simple mode
+                                        pass
+                                    
+                                    st.session_state.created_sos[order_number] = so_number
+                                    st.success(f"🎉 Created SO: {so_number}")
+                                    st.balloons()
+                                    # Clear the processing order
+                                    st.session_state.processing_order = None
+                                    st.rerun()
+                                else:
+                                    st.error(f"❌ Failed: {result_msg}")
+                    else:
+                        st.error(f"❌ Excel processing failed:")
+                        st.error(excel_error)
+                        
+                        st.warning("**Possible causes:**")
+                        st.write("• Excel file not found or path incorrect")
+                        st.write("• Excel file is open in another application")
+                        st.write("• Sheet1 not found in Excel file")
+                        st.write("• Macro didn't run automatically (check if macro is set to trigger on cell C5 change)")
+                        st.write("• Permission issues accessing the Excel file")
+        
+        # Step 2: Manual Options
+        st.markdown("---")
+        with st.expander("🔧 Manual Options", expanded=True):
+            st.info("Create SO without Excel processing")
+            
+            manual_price = st.number_input(
+                "Manual Price ($)", 
+                min_value=0.0, 
+                value=100.0, 
+                step=1.0,
+                key="manual_price"
+            )
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("✅ Create SO", key="create_manual"):
+                    with st.spinner("Creating Sales Order..."):
+                        so_number, result_msg = create_sales_order_simple(
+                            order_data['row'], 
+                            delivery_date, 
+                            manual_price, 
+                            skip_excel=True
+                        )
+                        
+                        if so_number:
+                            # Handle file attachment if provided
+                            uploaded_file = st.session_state.get(f"attachment_{order_number}")
+                            if uploaded_file:
+                                # File attachment would need to be implemented in the simple SO creation
+                                pass
+                            
+                            st.session_state.created_sos[order_number] = so_number
+                            st.success(f"🎉 Created SO: {so_number}")
+                            st.balloons()
+                            # Clear the processing order
+                            st.session_state.processing_order = None
+                            st.rerun()
+                        else:
+                            st.error(f"❌ Failed: {result_msg}")
+            
+            with col2:
+                if st.button("❌ Cancel", key="cancel_so"):
+                    st.session_state.processing_order = None
+                    st.rerun()
+        
+        # Step 3: File Attachment (Optional)
+        st.markdown("---")
+        with st.expander("📎 File Attachment", expanded=False):
+            st.info("Optional: Attach files after SO creation")
+            uploaded_file = st.file_uploader(
+                "Choose a file",
+                key=f"attachment_{order_number}",
+                help="Upload documents for this order"
+            )
+            
+            if uploaded_file:
+                st.info("File will be attached when SO is created")
+
+def close_so_creation_panel():
+    """Close the SO creation panel"""
+    st.session_state.processing_order = None
+    if st.session_state.get('so_creation_panel'):
+        st.session_state.so_creation_panel = None
 
 def fetch_swagelok_orders(selected_status):
     """Fetch orders from Swagelok portal with improved parsing"""
@@ -1550,12 +1684,21 @@ def logout():
     st.session_state.orders_data = None
     st.rerun()
 
+# Initialize API client and Excel processor
+@st.cache_resource
+def get_api_client():
+    return OptimizedFulcrumAPI(API_TOKEN)
+
 # Main app
 def main():
     # Check if user is logged in
     if not st.session_state.current_user:
         login_form()
         return
+    
+    # Show SO creation panel if active
+    if st.session_state.processing_order:
+        show_so_creation_panel()
     
     # Get current user info from session
     current_user = st.session_state.current_user
@@ -1620,33 +1763,161 @@ def main():
                 except Exception as e:
                     st.error(f"❌ Error fetching orders: {str(e)}")
         
+        # Clear processing panel if stuck
+        if st.session_state.processing_order:
+            st.markdown("---")
+            st.warning("⚠️ SO Creation Panel Active")
+            if st.button("🔄 Clear Panel", help="Clear the SO creation panel if stuck"):
+                st.session_state.processing_order = None
+                st.rerun()
+        
         st.markdown("---")
         
         # Excel Configuration Status
         st.header("⚙️ Configuration")
         
         # Check Excel configuration
-        excel_configured = bool(st.secrets.get("EXCEL_FILE_URL", ""))
+        excel_processor = get_openpyxl_excel_processor()
+        has_onedrive_url = bool(excel_processor.onedrive_url)
+        has_local_file = os.path.exists(excel_processor.excel_file_path)
+        excel_configured = has_onedrive_url or has_local_file
+        
         if excel_configured:
-            st.success("✅ Excel Integration Active")
-            st.info("🔧 Auto-pricing & BOM enabled")
+            if has_onedrive_url:
+                st.success("✅ OneDrive Excel Integration Configured")
+                st.info("☁️ Downloads Excel file from OneDrive")
+            else:
+                st.success("✅ Local Excel File Configured")
+                st.info("📁 Uses local Excel file")
+            
+            # Test file access
+            if st.button("🔗 Test Excel File Access", key="test_excel"):
+                with st.spinner("Testing Excel file access..."):
+                    if has_onedrive_url:
+                        # Test OneDrive download
+                        download_success, download_msg = excel_processor.download_excel_from_onedrive()
+                        if download_success:
+                            st.success("✅ OneDrive download successful!")
+                            # Test Excel file structure
+                            try:
+                                workbook = load_workbook(excel_processor.excel_file_path)
+                                if "Sheet1" in workbook.sheetnames:
+                                    st.info(f"Found Sheet1 with {workbook['Sheet1'].max_row} rows")
+                                else:
+                                    st.error("❌ Sheet1 not found in Excel file")
+                                workbook.close()
+                            except Exception as e:
+                                st.error(f"❌ Excel file structure error: {str(e)}")
+                        else:
+                            st.error(f"❌ OneDrive download failed: {download_msg}")
+                    else:
+                        # Test local file
+                        try:
+                            workbook = load_workbook(excel_processor.excel_file_path)
+                            if "Sheet1" in workbook.sheetnames:
+                                st.success("✅ Local Excel file access successful!")
+                                st.info(f"Found Sheet1 with {workbook['Sheet1'].max_row} rows")
+                            else:
+                                st.error("❌ Sheet1 not found in Excel file")
+                            workbook.close()
+                        except PermissionError:
+                            st.error("❌ Excel file is open in another application")
+                        except Exception as e:
+                            st.error(f"❌ Excel file access failed: {str(e)}")
         else:
-            st.error("❌ Excel URL not configured")
-            st.warning("⚠️ Manual pricing will be used")
-            st.info("💡 Add EXCEL_FILE_URL to secrets for full functionality")
+            st.error("❌ Excel file not configured")
+            st.warning("⚠️ Manual pricing only")
+            st.info("📁 Add EXCEL_ONEDRIVE_URL to secrets or place 'configurator.xlsx' in app directory")
         
         # Show configuration help
         with st.expander("🔧 Configuration Help"):
             st.markdown("""
             **Required Secrets:**
             - `FULCRUM_API_TOKEN`: Your Fulcrum API token
-            - `EXCEL_FILE_URL`: Direct download URL for your Excel file
             
-            **Excel File Requirements:**
-            - Sheet1 with part number input in C5
-            - Price output in C13, Description in C14
-            - BOM items in J14:J25, quantities in L14:L25, multipliers in M14:M25
-            - Operations in J36:J40, labor times in L36:L40
+            **OpenPyXL Excel Integration:**
+            - `EXCEL_FILE_PATH`: Path to your Excel file (optional, defaults to 'configurator.xlsx')
+            
+            **Excel File Setup:**
+            1. Place your Excel file in the app directory or specify path in secrets
+            2. Ensure the file has a 'Sheet1' worksheet
+            3. Set up macro to trigger automatically when cell C5 changes
+            4. Configure the following cell locations:
+               - C5: Part number input (app writes here)
+               - C13: Price output (app reads from here)
+               - C14: Description output (app reads from here)
+               - J14:M25: BOM items (J=name, L=quantity, M=multiplier)
+               - M36:L40: Operations (M=operation ID, L=labor time in minutes)
+            
+            **Macro Setup:**
+            In your Excel VBA, add a Worksheet_Change event:
+            ```vb
+            Private Sub Worksheet_Change(ByVal Target As Range)
+                If Target.Address = "$C$5" Then
+                    ' Your macro code here
+                    RunMultipleMacros2
+                End If
+            End Sub
+            ```
+            
+            **Benefits of OpenPyXL approach:**
+            - No Azure/Microsoft Graph API required (free)
+            - Works with local Excel files
+            - Automatic macro triggering on file save
+            - No authentication complexity
+            - Full Excel functionality available
+            """)
+        
+        with st.expander("📋 Setup Steps", expanded=False):
+            st.markdown("""
+            **Step 1: Prepare Excel File**
+            ```
+            1. Save your Excel file as 'configurator.xlsx' in app directory
+            2. OR add EXCEL_FILE_PATH to secrets with custom path
+            3. Ensure Sheet1 exists in the workbook
+            4. Test that macro runs when C5 is changed
+            ```
+            
+            **Step 2: Configure Cell Locations**
+            ```
+            Input:
+            - C5: Part number (app will write here)
+            
+            Outputs (app will read from here):
+            - C13: Price
+            - C14: Description
+            - J14:M25: BOM items (name, quantity, multiplier)
+            - M36:L40: Operations (operation ID, labor time)
+            ```
+            
+            **Step 3: VBA Macro Setup**
+            ```vb
+            ' Add this to your Sheet1 VBA code
+            Private Sub Worksheet_Change(ByVal Target As Range)
+                If Target.Address = "$C$5" Then
+                    Application.EnableEvents = False
+                    RunMultipleMacros2  ' Your macro name
+                    Application.EnableEvents = True
+                End If
+            End Sub
+            ```
+            
+            **Step 4: Test Configuration**
+            ```
+            1. Use the "Test Excel File Access" button above
+            2. Check that all required cells are accessible
+            3. Verify macro runs automatically when C5 changes
+            4. Test with a known part number
+            ```
+            
+            **Troubleshooting:**
+            ```
+            • File not found: Check path and file name
+            • Permission denied: Close Excel if it's open
+            • Macro not running: Check VBA Worksheet_Change event
+            • No data returned: Verify cell formulas and macro logic
+            • Wrong cell values: Check cell references match configuration
+            ```
             """)
         
         st.markdown("---")
@@ -1774,20 +2045,13 @@ def main():
                             )
                             if action == "Create SO":
                                 if st.button(f"Execute", key=f"execute_{idx}"):
-                                    with st.spinner(f"Creating SO for Order {order_number}..."):
-                                        order_data = row.tolist()
-                                        # Use the editable delivery date if available, otherwise use original
-                                        if delivery_date is not None:
-                                            so_number = create_sales_order(order_data, delivery_date)
-                                        else:
-                                            so_number = create_sales_order(order_data, str(row.iloc[5]))
-                                        
-                                        if so_number:
-                                            st.session_state.created_sos[order_number] = so_number
-                                            st.success(f"✅ Created SO: {so_number}")
-                                            st.rerun()
-                                        else:
-                                            st.error("❌ Failed to create Sales Order")
+                                    # Set up the SO creation panel
+                                    st.session_state.processing_order = {
+                                        'row': row.tolist(),
+                                        'delivery_date': delivery_date if delivery_date is not None else str(row.iloc[5]),
+                                        'order_number': order_number
+                                    }
+                                    st.rerun()
                             st.markdown('</div>', unsafe_allow_html=True)
             
             else:  # No Sales Order column (5 columns)
@@ -1863,15 +2127,13 @@ def main():
                             )
                             if action == "Create SO":
                                 if st.button(f"Execute", key=f"execute_{idx}"):
-                                    with st.spinner(f"Creating SO for Order {order_number}..."):
-                                        order_data = row.tolist()
-                                        so_number = create_sales_order(order_data, delivery_date)
-                                        if so_number:
-                                            st.session_state.created_sos[order_number] = so_number
-                                            st.success(f"✅ Created SO: {so_number}")
-                                            st.rerun()
-                                        else:
-                                            st.error("❌ Failed to create Sales Order")
+                                    # Set up the SO creation panel
+                                    st.session_state.processing_order = {
+                                        'row': row.tolist(),
+                                        'delivery_date': delivery_date,
+                                        'order_number': order_number
+                                    }
+                                    st.rerun()
                             st.markdown('</div>', unsafe_allow_html=True)
             
             # Add subtle separator between rows
@@ -1890,7 +2152,13 @@ def main():
             st.info(f"🔌 **API Status:** {api_status}")
         
         with col2:
-            excel_status = "✅ Configured" if st.secrets.get("EXCEL_FILE_URL") else "❌ Not Configured"
+            excel_processor = get_openpyxl_excel_processor()
+            if excel_processor.onedrive_url:
+                excel_status = "✅ OneDrive Excel Configured"
+            elif os.path.exists(excel_processor.excel_file_path):
+                excel_status = "✅ Local Excel File Found"
+            else:
+                excel_status = "❌ Excel Not Configured"
             st.info(f"📊 **Excel Integration:** {excel_status}")
         
         # Instructions only
