@@ -30,27 +30,6 @@ st.set_page_config(
 # Custom CSS for action column styling
 st.markdown("""
 <style>
-.action-column {
-    background-color: #e3f2fd !important;
-    border-radius: 8px !important;
-    padding: 8px !important;
-    border: 2px solid #2196f3 !important;
-    margin: 2px 0 !important;
-}
-
-.action-column .stButton > button {
-    background-color: #2196f3 !important;
-    color: white !important;
-    border: none !important;
-    border-radius: 4px !important;
-    font-weight: bold !important;
-}
-
-.action-column .stButton > button:hover {
-    background-color: #1976d2 !important;
-    color: white !important;
-}
-
 .success-action {
     background-color: #e8f5e8 !important;
     border: 2px solid #4caf50 !important;
@@ -59,6 +38,20 @@ st.markdown("""
     text-align: center !important;
     font-weight: bold !important;
     color: #2e7d32 !important;
+}
+
+.so-creation-panel {
+    position: fixed;
+    top: 0;
+    right: 0;
+    width: 400px;
+    height: 100vh;
+    background-color: white;
+    border-left: 2px solid #ddd;
+    padding: 20px;
+    overflow-y: auto;
+    z-index: 1000;
+    box-shadow: -2px 0 5px rgba(0,0,0,0.1);
 }
 </style>
 """, unsafe_allow_html=True)
@@ -666,7 +659,7 @@ class OptimizedFulcrumAPI:
 
 # ====== OPENPYXL EXCEL INTEGRATION ======
 class OpenpyxlExcelProcessor:
-    """Handle Excel operations using openpyxl with local Excel file"""
+    """Handle Excel operations using openpyxl with local Excel file only"""
     
     def __init__(self):
         self.price_cache = {}
@@ -674,7 +667,7 @@ class OpenpyxlExcelProcessor:
         
     def lookup_part_data(self, part_number):
         """
-        Lookup part data from Excel using openpyxl
+        Lookup part data from Excel using openpyxl (local file only)
         Your VBA macro runs automatically when we write to C5!
         Returns: (price, description, bom_items, operations, success, error_message)
         """
@@ -683,7 +676,7 @@ class OpenpyxlExcelProcessor:
             return cached_result + (True, "Using cached data")
         
         if not os.path.exists(self.excel_file_path):
-            error_msg = f"Excel file not found: {self.excel_file_path}. Please upload 'SWAGELOK HOSE CONFIGURATOR (Python).xlsm' to your repository."
+            error_msg = f"Excel file not found: {self.excel_file_path}. Please upload the file to your repository."
             return None, None, [], [], False, error_msg
         
         try:
@@ -762,15 +755,15 @@ class OpenpyxlExcelProcessor:
             
             workbook.close()
             
-            if price is None:
-                error_msg = "Excel processing completed but no price was returned. This might indicate the VBA macro didn't run properly or the part number wasn't found."
-                return None, None, [], [], False, error_msg
-            
-            # Cache successful result
+            # Cache successful result (even if price is None)
             result = (price, description, bom_items, operations)
             self.price_cache[part_number] = result
             
-            success_msg = f"Excel processing successful: Price=${price}, {len(bom_items)} BOM items, {len(operations)} operations"
+            if price is None:
+                success_msg = f"Excel processing completed but no price returned. Found {len(bom_items)} BOM items, {len(operations)} operations. Price will be requested from user."
+            else:
+                success_msg = f"Excel processing successful: Price=${price}, {len(bom_items)} BOM items, {len(operations)} operations"
+            
             return price, description, bom_items, operations, True, success_msg
             
         except PermissionError:
@@ -856,7 +849,8 @@ def process_part_number_with_fallback(part_number, manual_price=None):
         if price is None and manual_price is not None:
             price = manual_price
         elif price is None:
-            price = 100.0  # Default fallback price
+            # Don't use default price - require user input
+            return None, None, False, "Excel processing completed but no price was returned. Please enter price manually.", bom_items, operations
         
         # Step 3: Handle item creation or update
         if existing_item_id:
@@ -943,18 +937,23 @@ def create_sales_order_simple(order_row, delivery_date=None, manual_price=None, 
         # Step 2: Process part
         if skip_excel:
             # Simple item creation without Excel processing
+            if manual_price is None:
+                return None, "Manual price is required when skipping Excel processing"
+            
             existing_item_id = api_client.check_item_exists(part_number)
             if existing_item_id:
                 item_id = existing_item_id
             else:
                 item_id = api_client.create_item(part_number, f"Swagelok Part {part_number}")
             
-            price = manual_price or 100.0
+            price = manual_price
         else:
             # Full Excel processing
             item_id, price, success, error_msg, bom_items, operations = process_part_number_with_fallback(part_number, manual_price)
             if not success:
                 return None, error_msg
+            if price is None:
+                return None, "Price is required to create Sales Order"
         
         # Step 3: Add line item
         if item_id and price is not None:
@@ -970,7 +969,7 @@ def create_sales_order_simple(order_row, delivery_date=None, manual_price=None, 
         return None, f"Error creating sales order: {str(e)}"
 
 def show_so_creation_panel():
-    """Show the SO creation panel in the sidebar"""
+    """Show the SO creation panel on the right side of main window"""
     if not st.session_state.processing_order:
         return
     
@@ -979,132 +978,116 @@ def show_so_creation_panel():
     part_number = str(order_data['row'][2])
     delivery_date = order_data.get('delivery_date')
     
-    with st.sidebar:
-        st.header("🔄 Creating Sales Order")
+    # Create right-side panel for SO creation
+    st.markdown("---")
+    
+    # Create two columns - main content and SO creation panel
+    main_col, so_panel_col = st.columns([2, 1])
+    
+    with so_panel_col:
+        st.markdown("### 🔄 Creating Sales Order")
         st.write(f"**Order:** {order_number}")
         st.write(f"**Part:** {part_number}")
         
         # Step 1: Try Excel Processing
-        with st.expander("📊 OpenPyXL Excel Processing", expanded=True):
-            if st.button("🔄 Process with Excel File", key="excel_process"):
-                with st.spinner("Processing Excel file with openpyxl..."):
-                    excel_processor = get_openpyxl_excel_processor()
-                    price, description, bom_items, operations, excel_success, excel_error = excel_processor.lookup_part_data(part_number)
-                    
-                    if excel_success:
-                        st.success("✅ Excel processing successful!")
+        st.markdown("#### 📊 Excel Processing")
+        if st.button("🔄 Process with Excel File", key="excel_process"):
+            with st.spinner("Processing Excel file..."):
+                excel_processor = get_openpyxl_excel_processor()
+                price, description, bom_items, operations, excel_success, excel_error = excel_processor.lookup_part_data(part_number)
+                
+                if excel_success:
+                    st.success("✅ Excel processing successful!")
+                    if price:
                         st.write(f"**Price:** ${price}")
-                        st.write(f"**Description:** {description}")
-                        st.write(f"**BOM Items:** {len(bom_items)}")
-                        st.write(f"**Operations:** {len(operations)}")
-                        
-                        # Show BOM details
-                        if bom_items:
-                            with st.expander("📦 BOM Items", expanded=False):
-                                for item in bom_items:
-                                    st.write(f"- {item['name']}: {item['value']}")
-                        
-                        # Show operations details
-                        if operations:
-                            with st.expander("⚙️ Operations", expanded=False):
-                                for op in operations:
-                                    st.write(f"- {op['systemOperationId']}: {op['laborTime']}s")
-                        
-                        if st.button("✅ Create SO with Excel Data", key="create_with_excel"):
-                            with st.spinner("Creating Sales Order..."):
-                                so_number, result_msg = create_sales_order_simple(
-                                    order_data['row'], 
-                                    delivery_date, 
-                                    price, 
-                                    skip_excel=False
-                                )
-                                
-                                if so_number:
-                                    # Handle file attachment if provided
-                                    uploaded_file = st.session_state.get(f"attachment_{order_number}")
-                                    if uploaded_file:
-                                        api_client = get_api_client()
-                                        # Get the sales order ID for attachment
-                                        # Note: We'd need the sales_order_id here, which we don't have in the simple version
-                                        # For now, we'll skip attachment in simple mode
-                                        pass
-                                    
-                                    st.session_state.created_sos[order_number] = so_number
-                                    st.success(f"🎉 Created SO: {so_number}")
-                                    st.balloons()
-                                    # Clear the processing order
-                                    st.session_state.processing_order = None
-                                    st.rerun()
-                                else:
-                                    st.error(f"❌ Failed: {result_msg}")
                     else:
-                        st.error(f"❌ Excel processing failed:")
-                        st.error(excel_error)
-                        
-                        st.warning("**Possible causes:**")
-                        st.write("• Excel file not found or path incorrect")
-                        st.write("• Excel file is open in another application")
-                        st.write("• Sheet1 not found in Excel file")
-                        st.write("• Macro didn't run automatically (check if macro is set to trigger on cell C5 change)")
-                        st.write("• Permission issues accessing the Excel file")
+                        st.warning("⚠️ No price returned from Excel")
+                    st.write(f"**Description:** {description}")
+                    st.write(f"**BOM Items:** {len(bom_items)}")
+                    st.write(f"**Operations:** {len(operations)}")
+                    
+                    # Store Excel results in session state
+                    st.session_state.excel_results = {
+                        'price': price,
+                        'description': description,
+                        'bom_items': bom_items,
+                        'operations': operations
+                    }
+                else:
+                    st.error(f"❌ Excel processing failed:")
+                    st.error(excel_error)
         
-        # Step 2: Manual Options
-        st.markdown("---")
-        with st.expander("🔧 Manual Options", expanded=True):
-            st.info("Create SO without Excel processing")
-            
-            manual_price = st.number_input(
-                "Manual Price ($)", 
+        # Step 2: Price Input (required if Excel didn't provide price)
+        st.markdown("#### 💰 Price Input")
+        
+        excel_price = None
+        if hasattr(st.session_state, 'excel_results') and st.session_state.excel_results:
+            excel_price = st.session_state.excel_results.get('price')
+        
+        if excel_price:
+            st.info(f"Excel price: ${excel_price}")
+            use_excel_price = st.checkbox("Use Excel price", value=True, key="use_excel_price")
+            if use_excel_price:
+                final_price = excel_price
+                st.write(f"**Using price:** ${final_price}")
+            else:
+                final_price = st.number_input(
+                    "Manual Price ($)", 
+                    min_value=0.0, 
+                    value=excel_price, 
+                    step=1.0,
+                    key="manual_price_override"
+                )
+        else:
+            st.warning("⚠️ Price required to create Sales Order")
+            final_price = st.number_input(
+                "Enter Price ($)", 
                 min_value=0.0, 
-                value=100.0, 
+                value=0.0, 
                 step=1.0,
-                key="manual_price"
+                key="required_manual_price"
             )
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button("✅ Create SO", key="create_manual"):
-                    with st.spinner("Creating Sales Order..."):
-                        so_number, result_msg = create_sales_order_simple(
-                            order_data['row'], 
-                            delivery_date, 
-                            manual_price, 
-                            skip_excel=True
-                        )
-                        
-                        if so_number:
-                            # Handle file attachment if provided
-                            uploaded_file = st.session_state.get(f"attachment_{order_number}")
-                            if uploaded_file:
-                                # File attachment would need to be implemented in the simple SO creation
-                                pass
-                            
-                            st.session_state.created_sos[order_number] = so_number
-                            st.success(f"🎉 Created SO: {so_number}")
-                            st.balloons()
-                            # Clear the processing order
-                            st.session_state.processing_order = None
-                            st.rerun()
-                        else:
-                            st.error(f"❌ Failed: {result_msg}")
-            
-            with col2:
-                if st.button("❌ Cancel", key="cancel_so"):
-                    st.session_state.processing_order = None
-                    st.rerun()
         
-        # Step 3: File Attachment (Optional)
-        st.markdown("---")
-        with st.expander("📎 File Attachment", expanded=False):
-            st.info("Optional: Attach files after SO creation")
-            uploaded_file = st.file_uploader(
-                "Choose a file",
-                key=f"attachment_{order_number}",
-                help="Upload documents for this order"
-            )
-            
-            if uploaded_file:
-                st.info("File will be attached when SO is created")
+        # Step 3: Create SO Button
+        st.markdown("#### ✅ Create Sales Order")
+        
+        can_create_so = final_price > 0
+        
+        if can_create_so:
+            if st.button("✅ Create SO", key="create_so_final"):
+                with st.spinner("Creating Sales Order..."):
+                    # Determine if we should skip Excel (if we already processed it)
+                    skip_excel = not hasattr(st.session_state, 'excel_results') or not st.session_state.excel_results
+                    
+                    so_number, result_msg = create_sales_order_simple(
+                        order_data['row'], 
+                        delivery_date, 
+                        final_price, 
+                        skip_excel=skip_excel
+                    )
+                    
+                    if so_number:
+                        st.session_state.created_sos[order_number] = so_number
+                        st.success(f"🎉 Created SO: {so_number}")
+                        st.balloons()
+                        # Clear the processing order and excel results
+                        st.session_state.processing_order = None
+                        if hasattr(st.session_state, 'excel_results'):
+                            del st.session_state.excel_results
+                        st.rerun()
+                    else:
+                        st.error(f"❌ Failed: {result_msg}")
+        else:
+            st.error("❌ Please enter a price greater than $0")
+        
+        # Step 4: Cancel Button
+        if st.button("❌ Cancel", key="cancel_so"):
+            st.session_state.processing_order = None
+            if hasattr(st.session_state, 'excel_results'):
+                del st.session_state.excel_results
+            st.rerun()
+    
+    return main_col  # Return the main column for other content
 
 def close_so_creation_panel():
     """Close the SO creation panel"""
