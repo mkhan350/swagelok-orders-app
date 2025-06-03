@@ -895,17 +895,7 @@ def show_so_creation_panel():
     order_number = str(order_data['row'][0])
     part_number = str(order_data['row'][2])
     delivery_date = order_data.get('delivery_date')
-    
-    # Create a container for the floating panel
-    panel_html = f"""
-    <div class="so-panel">
-        <h3>🔧 Creating Sales Order</h3>
-        <p><strong>Order:</strong> {order_number}</p>
-        <p><strong>Part:</strong> {part_number}</p>
-        <p><strong>Delivery:</strong> {delivery_date if delivery_date else 'TBD'}</p>
-    </div>
-    """
-    
+     
     # Display the floating panel HTML
     st.markdown(panel_html, unsafe_allow_html=True)
     
