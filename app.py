@@ -41,32 +41,6 @@ st.markdown("""
     color: #2e7d32 !important;
 }
 
-.action-column {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    align-items: stretch;
-}
-
-.action-column .stSelectbox > div > div {
-    height: 38px;
-    min-height: 38px;
-}
-
-.action-column .stButton > button {
-    height: 38px;
-    min-height: 38px;
-    margin: 0;
-    padding: 0 12px;
-}
-
-/* Fix selectbox alignment */
-.stSelectbox > div > div > div {
-    height: 38px;
-    display: flex;
-    align-items: center;
-}
-
 /* SO Creation Panel Styling */
 .so-panel {
     position: fixed;
@@ -1834,8 +1808,7 @@ def display_main_content():
                     if order_number in st.session_state.created_sos:
                         st.markdown(f'<div class="success-action">✅ SO: {st.session_state.created_sos[order_number]}</div>', unsafe_allow_html=True)
                     else:
-                        # Fixed action column - only show dropdown, no execute button
-                        st.markdown('<div class="action-column">', unsafe_allow_html=True)
+                        # Fixed action column - only show dropdown, no wrapper div
                         action = st.selectbox(
                             "Action",
                             ["Select Action", "Create SO"],
@@ -1843,7 +1816,6 @@ def display_main_content():
                             label_visibility="collapsed",
                             on_change=lambda idx=idx, row=row, delivery_date=delivery_date: handle_action_change(idx, row, delivery_date)
                         )
-                        st.markdown('</div>', unsafe_allow_html=True)
             
             else:  # No Sales Order column (5 columns)
                 col1, col2, col3, col4, col5, col6, col7 = st.columns([0.5, 1.2, 1.2, 2, 1, 1.5, 1.5])
@@ -1858,7 +1830,7 @@ def display_main_content():
                     part_num = str(row.iloc[2])
                     # Add SS-FV indicator
                     if part_num.startswith("SS-FV"):
-                        st.write(f"{part_num}")
+                        st.write(f" {part_num}")
                     else:
                         st.write(f"{part_num}")
                 with col5:
@@ -1911,8 +1883,7 @@ def display_main_content():
                     if order_number in st.session_state.created_sos:
                         st.markdown(f'<div class="success-action">✅ SO: {st.session_state.created_sos[order_number]}</div>', unsafe_allow_html=True)
                     else:
-                        # Fixed action column - only show dropdown, no execute button
-                        st.markdown('<div class="action-column">', unsafe_allow_html=True)
+                        # Fixed action column - only show dropdown, no wrapper div
                         action = st.selectbox(
                             "Action",
                             ["Select Action", "Create SO"],
@@ -1920,7 +1891,6 @@ def display_main_content():
                             label_visibility="collapsed",
                             on_change=lambda idx=idx, row=row, delivery_date=delivery_date: handle_action_change(idx, row, delivery_date)
                         )
-                        st.markdown('</div>', unsafe_allow_html=True)
             
             # Add subtle separator between rows
             if idx < len(st.session_state.orders_data) - 1:
@@ -1931,14 +1901,14 @@ def display_main_content():
         st.markdown(f"# WELCOME **{st.session_state.current_user['first_name'].upper()}**")
         st.markdown("---")
         
-
+       
         # Instructions only
         st.info("👆 Use the sidebar to fetch orders and get started!")
         st.markdown("""
         ### How to use:
         1. **Select Order Status** from the dropdown in the sidebar
         2. **Click 'Fetch Orders'** to retrieve orders from Swagelok portal
-        3. **Review orders** in the main table
+        3. **Review orders** in the main table 
         4. **Adjust delivery dates** as needed (all dates are editable except "Delivered" orders)
         5. **Select 'Create SO'** from action dropdown
         6. **SS-FV parts** will be automatically calculated (pricing, BOM, operations)
