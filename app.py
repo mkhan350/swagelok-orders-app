@@ -41,18 +41,18 @@ st.markdown("""
     color: #2e7d32 !important;
 }
 
-.so-creation-panel {
-    position: fixed;
-    top: 0;
-    right: 0;
-    width: 400px;
-    height: 100vh;
-    background-color: white;
-    border-left: 2px solid #ddd;
-    padding: 20px;
-    overflow-y: auto;
-    z-index: 1000;
-    box-shadow: -2px 0 5px rgba(0,0,0,0.1);
+.action-column {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.action-column .stSelectbox {
+    margin-bottom: 4px;
+}
+
+.action-column .stButton {
+    margin-top: 4px;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -882,80 +882,49 @@ def create_sales_order_simple(order_row, delivery_date=None, manual_price=None, 
 def show_so_creation_panel():
     """Show the SO creation panel on the right side of main window"""
     if not st.session_state.processing_order:
-        return
+        return None
     
     order_data = st.session_state.processing_order
     order_number = str(order_data['row'][0])
     part_number = str(order_data['row'][2])
     delivery_date = order_data.get('delivery_date')
     
-    # Create right-side panel for SO creation
-    st.markdown("---")
-    
-    # Create two columns - main content and SO creation panel
+    # Create two columns - main content and SO creation panel  
     main_col, so_panel_col = st.columns([2, 1])
     
     with so_panel_col:
-        st.markdown("### 🔄 Creating Sales Order")
+        st.markdown("### Creating Sales Order")
         st.write(f"**Order:** {order_number}")
         st.write(f"**Part:** {part_number}")
-        
-        # Step 1: Try SS-FV Processing
-        st.markdown("#### 🧮 SS-FV Processing")
         
         # Check if it's an SS-FV part
         is_ssfv_part = part_number.startswith("SS-FV")
         
-        if is_ssfv_part:
-            if st.button("🔄 Process SS-FV Part", key="ssfv_process"):
-                with st.spinner("Processing SS-FV part..."):
-                    success, ssfv_result, error_msg = process_ssfv_part_number(part_number)
+        # Auto-process SS-FV parts
+        if is_ssfv_part and not hasattr(st.session_state, 'ssfv_results'):
+            with st.spinner("Processing SS-FV part..."):
+                success, ssfv_result, error_msg = process_ssfv_part_number(part_number)
+                
+                if success:
+                    price = ssfv_result.get("unit_price")
+                    description = ssfv_result.get("description", "")
+                    bom_count = len(ssfv_result.get("bom_items", []))
+                    operations_count = len(ssfv_result.get("production_items", []))
                     
-                    if success:
-                        st.success("✅ SS-FV processing successful!")
-                        
-                        # Display results
-                        price = ssfv_result.get("unit_price")
-                        if price:
-                            st.write(f"**Price:** ${price:.2f}")
-                        else:
-                            st.warning("⚠️ No price calculated")
-                        
-                        description = ssfv_result.get("description", "")
-                        st.write(f"**Description:** {description}")
-                        
-                        bom_count = len(ssfv_result.get("bom_items", []))
-                        operations_count = len(ssfv_result.get("production_items", []))
-                        st.write(f"**BOM Items:** {bom_count}")
-                        st.write(f"**Operations:** {operations_count}")
-                        
-                        # Show detailed results
-                        with st.expander("📋 Detailed Results"):
-                            st.json(ssfv_result)
-                        
-                        # Store SS-FV results in session state
-                        st.session_state.ssfv_results = {
-                            'success': True,
-                            'price': price,
-                            'description': description,
-                            'result': ssfv_result
-                        }
-                    else:
-                        st.error(f"❌ SS-FV processing failed:")
-                        st.error(error_msg)
-                        st.session_state.ssfv_results = {
-                            'success': False,
-                            'error': error_msg
-                        }
-        else:
-            st.info("ℹ️ Not an SS-FV part - manual pricing required")
-            st.session_state.ssfv_results = {
-                'success': False,
-                'error': 'Not an SS-FV part'
-            }
+                    st.session_state.ssfv_results = {
+                        'success': True,
+                        'price': price,
+                        'description': description,
+                        'result': ssfv_result
+                    }
+                else:
+                    st.session_state.ssfv_results = {
+                        'success': False,
+                        'error': error_msg
+                    }
         
-        # Step 2: Price Input
-        st.markdown("#### 💰 Price Input")
+        # Price Input
+        st.markdown("#### Price Input")
         
         ssfv_price = None
         if hasattr(st.session_state, 'ssfv_results') and st.session_state.ssfv_results.get('success'):
@@ -976,7 +945,9 @@ def show_so_creation_panel():
                     key="manual_price_override"
                 )
         else:
-            st.warning("⚠️ Price required to create Sales Order")
+            if is_ssfv_part and hasattr(st.session_state, 'ssfv_results'):
+                st.error(f"SS-FV processing failed: {st.session_state.ssfv_results.get('error', 'Unknown error')}")
+            
             final_price = st.number_input(
                 "Enter Price ($)", 
                 min_value=0.0, 
@@ -985,15 +956,12 @@ def show_so_creation_panel():
                 key="required_manual_price"
             )
         
-        # Step 3: Create SO Button
-        st.markdown("#### ✅ Create Sales Order")
+        # Action buttons
+        col1, col2 = st.columns(2)
         
-        can_create_so = final_price > 0
-        
-        if can_create_so:
-            if st.button("✅ Create SO", key="create_so_final"):
+        with col1:
+            if st.button("Create SO", key="create_so_final", disabled=(final_price <= 0)):
                 with st.spinner("Creating Sales Order..."):
-                    # Determine if we should skip processing (if we already processed it)
                     skip_processing = not is_ssfv_part or not hasattr(st.session_state, 'ssfv_results') or not st.session_state.ssfv_results.get('success')
                     
                     so_number, result_msg = create_sales_order_simple(
@@ -1006,31 +974,28 @@ def show_so_creation_panel():
                     if so_number:
                         st.session_state.created_sos[order_number] = so_number
                         st.success(f"🎉 Created SO: {so_number}")
-                        st.balloons()
-                        # Clear the processing order and SS-FV results
+                        # Clear the processing order and results but stay on same page
                         st.session_state.processing_order = None
                         if hasattr(st.session_state, 'ssfv_results'):
                             del st.session_state.ssfv_results
                         st.rerun()
                     else:
                         st.error(f"❌ Failed: {result_msg}")
-        else:
-            st.error("❌ Please enter a price greater than $0")
         
-        # Step 4: Cancel Button
-        if st.button("❌ Cancel", key="cancel_so"):
-            st.session_state.processing_order = None
-            if hasattr(st.session_state, 'ssfv_results'):
-                del st.session_state.ssfv_results
-            st.rerun()
+        with col2:
+            if st.button("Cancel", key="cancel_so"):
+                st.session_state.processing_order = None
+                if hasattr(st.session_state, 'ssfv_results'):
+                    del st.session_state.ssfv_results
+                st.rerun()
     
     return main_col  # Return the main column for other content
 
 def close_so_creation_panel():
     """Close the SO creation panel"""
     st.session_state.processing_order = None
-    if st.session_state.get('so_creation_panel'):
-        st.session_state.so_creation_panel = None
+    if hasattr(st.session_state, 'ssfv_results'):
+        del st.session_state.ssfv_results
 
 # Business Logic Functions (keeping existing ones)
 def business_days_from(start_date, days):
@@ -1313,6 +1278,11 @@ def create_user_form():
     """Form to create new users (admin only)"""
     st.subheader("👤 Create New User")
     
+    # Back button
+    if st.button("← Back to Home", key="back_from_create_user"):
+        st.session_state.show_create_user = False
+        st.rerun()
+    
     with st.form("create_user_form"):
         col1, col2 = st.columns(2)
         with col1:
@@ -1340,6 +1310,11 @@ def create_user_form():
 def change_password_form():
     """Form to change password"""
     st.subheader("🔒 Change Password")
+    
+    # Back button
+    if st.button("← Back to Home", key="back_from_change_password"):
+        st.session_state.show_change_password = False
+        st.rerun()
     
     with st.form("change_password_form"):
         current_password = st.text_input("Current Password", type="password")
@@ -1369,6 +1344,11 @@ def change_password_form():
 def view_users_form():
     """View all users and backup management (admin only)"""
     st.subheader("👥 All Users")
+    
+    # Back button
+    if st.button("← Back to Home", key="back_from_view_users"):
+        st.session_state.show_view_users = False
+        st.rerun()
     
     user_db = get_user_db()
     
@@ -1628,23 +1608,14 @@ def main():
     # Show user management forms if requested
     if st.session_state.get('show_create_user', False):
         create_user_form()
-        if st.button("← Back to Orders"):
-            st.session_state.show_create_user = False
-            st.rerun()
         return
     
     if st.session_state.get('show_view_users', False):
         view_users_form()
-        if st.button("← Back to Orders"):
-            st.session_state.show_view_users = False
-            st.rerun()
         return
     
     if st.session_state.get('show_change_password', False):
         change_password_form()
-        if st.button("← Back to Orders"):
-            st.session_state.show_change_password = False
-            st.rerun()
         return
     
     # Sidebar for controls and account
@@ -1690,99 +1661,14 @@ def main():
                 st.session_state.processing_order = None
                 st.rerun()
         
-        st.markdown("---")
-        
-        # SS-FV Calculator Status
-        st.header("⚙️ Configuration")
-        
-        # Test SS-FV Calculator
-        st.success("✅ SS-FV Calculator Ready")
-        st.info("🧮 Integrated SS-FV part number calculator")
-        
-        if st.button("🧮 Test SS-FV Calculator", key="test_ssfv"):
-            with st.spinner("Testing SS-FV calculator..."):
-                try:
-                    # Test with a sample SS-FV part
-                    test_part = "SS-FV8TN8TN8-100-QB1"
-                    success, result, error_msg = process_ssfv_part_number(test_part)
-                    
-                    if success:
-                        st.success("✅ SS-FV calculator working correctly!")
-                        st.write(f"**Test part:** {test_part}")
-                        if result.get('unit_price'):
-                            st.write(f"**Price:** ${result['unit_price']:.2f}")
-                        st.write(f"**BOM items:** {len(result.get('bom_items', []))}")
-                        st.write(f"**Operations:** {len(result.get('production_items', []))}")
-                    else:
-                        st.error(f"❌ SS-FV calculator test failed: {error_msg}")
-                except Exception as e:
-                    st.error(f"❌ SS-FV calculator error: {str(e)}")
-        
-        # Show configuration help
-        with st.expander("🔧 Configuration Help"):
-            st.markdown("""
-            **Required Secrets:**
-            - `FULCRUM_API_TOKEN`: Your Fulcrum API token
-            
-            **SS-FV Calculator Integration:**
-            - ✅ **No additional configuration needed!**
-            - The SS-FV calculator is now built-in
-            - Automatically processes SS-FV part numbers
-            - Calculates pricing, BOM items, and operations
-            - No Excel file dependencies
-            
-            **How it works:**
-            1. **SS-FV parts** (starting with "SS-FV") are automatically processed by the calculator
-            2. **Pricing** is calculated based on part specifications
-            3. **BOM items** are generated for manufacturing
-            4. **Operations** are created with time estimates
-            5. **Non SS-FV parts** require manual pricing
-            
-            **Supported formats:**
-            - Standard: `SS-FV8TN8TN8-100-QB1`
-            - With CM: `SS-FV8TN8TN8-1800CM0424`
-            - Compressed: `SS-FV12TN12TN121800CM0424`
-            - Special codes: 0424, 0660, 0663, 0658, 0662
-            """)
-        
-        with st.expander("📋 SS-FV Calculator Features", expanded=False):
-            st.markdown("""
-            **Automated Processing:**
-            ```
-            ✅ Size detection (08, 12, 16)
-            ✅ Performance detection (STD, MLI)
-            ✅ Length extraction and conversion
-            ✅ CM to inches conversion
-            ✅ Special performance codes
-            ✅ Compressed format handling
-            ```
-            
-            **Calculations:**
-            ```
-            ✅ Dynamic pricing based on size/performance
-            ✅ BOM generation with part numbers and quantities
-            ✅ Production time estimates
-            ✅ Operations with labor times
-            ✅ Business logic for hose assembly
-            ```
-            
-            **Integration Benefits:**
-            ```
-            ✅ No Excel dependencies
-            ✅ Real-time processing
-            ✅ Consistent calculations
-            ✅ Easy maintenance
-            ✅ Version control friendly
-            ```
-            
-            **Error Handling:**
-            ```
-            ✅ Invalid part number detection
-            ✅ Graceful fallback to manual pricing
-            ✅ Detailed error messages
-            ✅ Validation of all inputs
-            ```
-            """)
+        # Add Back to Home button when needed
+        if st.session_state.get('show_create_user', False) or st.session_state.get('show_view_users', False) or st.session_state.get('show_change_password', False):
+            st.markdown("---")
+            if st.button("← Back to Home", use_container_width=True):
+                st.session_state.show_create_user = False
+                st.session_state.show_view_users = False
+                st.session_state.show_change_password = False
+                st.rerun()
         
         st.markdown("---")
         
