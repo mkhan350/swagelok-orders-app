@@ -1796,7 +1796,7 @@ def display_main_content():
                     part_num = str(row.iloc[2])
                     # Add SS-FV indicator
                     if part_num.startswith("SS-FV"):
-                        st.write(f"🧮 {part_num}")
+                        st.write(f" {part_num}")
                     else:
                         st.write(f"{part_num}")
                 with col5:
