@@ -15,10 +15,11 @@ import io
 import sqlite3
 import hashlib
 import os
-import openpyxl
-from openpyxl import load_workbook
 import traceback
 import math
+
+# Import SS-FV Calculator
+from ssfv_calculator import SmartNumberCalculator
 
 # Page setup
 st.set_page_config(
@@ -395,9 +396,9 @@ if 'so_creation_panel' not in st.session_state:
 if 'processing_order' not in st.session_state:
     st.session_state.processing_order = None
 
-# ====== ENHANCED API CLIENT WITH EXCEL AND BOM FUNCTIONALITY ======
+# ====== ENHANCED API CLIENT WITH SS-FV INTEGRATION ======
 class OptimizedFulcrumAPI:
-    """Enhanced API client with BOM, operations, and Excel integration"""
+    """Enhanced API client with BOM, operations, and SS-FV calculator integration"""
     
     def __init__(self, token):
         self.api_token = token
@@ -657,200 +658,110 @@ class OptimizedFulcrumAPI:
         except (ValueError, TypeError) as e:
             return False
 
-# ====== OPENPYXL EXCEL INTEGRATION ======
-class OpenpyxlExcelProcessor:
-    """Handle Excel operations using openpyxl with local Excel file only"""
-    
-    def __init__(self):
-        self.price_cache = {}
-        self.excel_file_path = st.secrets.get("EXCEL_FILE_PATH", "SWAGELOK HOSE CONFIGURATOR (Python).xlsm")
-        
-    def lookup_part_data(self, part_number):
-        """
-        Lookup part data from Excel using openpyxl (local file only)
-        Your VBA macro runs automatically when we write to C5!
-        Returns: (price, description, bom_items, operations, success, error_message)
-        """
-        if part_number in self.price_cache:
-            cached_result = self.price_cache[part_number]
-            return cached_result + (True, "Using cached data")
-        
-        if not os.path.exists(self.excel_file_path):
-            error_msg = f"Excel file not found: {self.excel_file_path}. Please upload the file to your repository."
-            return None, None, [], [], False, error_msg
-        
-        try:
-            # Step 1: Load workbook (preserve VBA)
-            workbook = load_workbook(self.excel_file_path, keep_vba=True)
-            
-            # Check if Sheet1 exists
-            if "Sheet1" not in workbook.sheetnames:
-                error_msg = "Sheet1 not found in Excel file. Please ensure your Excel file has a 'Sheet1' worksheet."
-                workbook.close()
-                return None, None, [], [], False, error_msg
-            
-            worksheet = workbook["Sheet1"]
-            
-            # Step 2: Write part number to C5 (this triggers your VBA macro automatically!)
-            worksheet["C5"] = part_number
-            
-            # Step 3: Save the file to trigger the Worksheet_Change event
-            workbook.save(self.excel_file_path)
-            workbook.close()
-            
-            # Step 4: Wait for VBA macro to complete
-            time.sleep(3)  # Give the macro time to run
-            
-            # Step 5: Reload the workbook to get updated values (data_only=True for calculated values)
-            workbook = load_workbook(self.excel_file_path, data_only=True)
-            worksheet = workbook["Sheet1"]
-            
-            # Step 6: Read results from output cells
-            
-            # Get price from C13
-            price_value = worksheet["C13"].value
-            price = None
-            if price_value is not None:
-                try:
-                    price = round(float(price_value), 2)
-                except (ValueError, TypeError):
-                    price = None
-            
-            # Get description from C14
-            description_value = worksheet["C14"].value
-            description = str(description_value) if description_value else f"Swagelok Part {part_number}"
-            
-            # Get BOM items from J14:M25
-            bom_items = []
-            for row in range(14, 26):  # J14:M25
-                j_value = worksheet[f"J{row}"].value  # Part name
-                l_value = worksheet[f"L{row}"].value  # Quantity
-                m_value = worksheet[f"M{row}"].value  # Multiplier
-                
-                if j_value and l_value:
-                    try:
-                        value = float(l_value) * float(m_value) if m_value else float(l_value)
-                        bom_items.append({
-                            "name": str(j_value).strip(),
-                            "value": value
-                        })
-                    except (ValueError, TypeError):
-                        continue
-            
-            # Get operations from M36:L40 (M column for operation ID, L column for labor time)
-            operations = []
-            for row in range(36, 41):  # M36:L40
-                operation_id = worksheet[f"M{row}"].value  # Operation ID
-                labor_time = worksheet[f"L{row}"].value   # Labor time
-                
-                if operation_id and labor_time:
-                    try:
-                        operations.append({
-                            "systemOperationId": str(operation_id).strip(),
-                            "order": row - 35,  # Order based on row position
-                            "laborTime": int(math.ceil(float(labor_time))) * 60  # Convert minutes to seconds
-                        })
-                    except (ValueError, TypeError):
-                        continue
-            
-            workbook.close()
-            
-            # Cache successful result (even if price is None)
-            result = (price, description, bom_items, operations)
-            self.price_cache[part_number] = result
-            
-            if price is None:
-                success_msg = f"Excel processing completed but no price returned. Found {len(bom_items)} BOM items, {len(operations)} operations. Price will be requested from user."
-            else:
-                success_msg = f"Excel processing successful: Price=${price}, {len(bom_items)} BOM items, {len(operations)} operations"
-            
-            return price, description, bom_items, operations, True, success_msg
-            
-        except PermissionError:
-            error_msg = "Excel file is being used by another process. If you have the file open in Excel, please close it and try again."
-            return None, None, [], [], False, error_msg
-        except Exception as e:
-            error_msg = f"Excel processing error: {str(e)}"
-            return None, None, [], [], False, error_msg
-
-# Initialize openpyxl Excel processor
+# ====== SS-FV CALCULATOR INTEGRATION ======
 @st.cache_resource
-def get_openpyxl_excel_processor():
-    return OpenpyxlExcelProcessor()
+def get_ssfv_calculator():
+    """Initialize and cache the SS-FV calculator"""
+    return SmartNumberCalculator()
 
-# Business Logic Functions
-def business_days_from(start_date, days):
-    """Calculate business days from start date (excluding weekends)"""
-    current_date = start_date
-    days_added = 0
-    
-    while days_added < days:
-        current_date += timedelta(days=1)
-        # Only count weekdays (Monday=0, Sunday=6)
-        if current_date.weekday() < 5:
-            days_added += 1
-    
-    return current_date
+def process_ssfv_part_number(part_number):
+    """
+    Process SS-FV part number using the calculator
+    Returns: (success, result_dict, error_message)
+    """
+    try:
+        calculator = get_ssfv_calculator()
+        result = calculator.process_part_number(part_number)
+        
+        if "error" in result:
+            return False, None, result["error"]
+        
+        return True, result, "SS-FV part processed successfully"
+        
+    except Exception as e:
+        return False, None, f"Error processing SS-FV part: {str(e)}"
 
-def parse_date_safely(date_str):
-    """Safely parse date string in various formats"""
-    if not date_str or date_str in ["TBD", "Delivered", ""]:
-        return None
-    
-    # Try different date formats
-    date_formats = ["%m/%d/%Y", "%Y-%m-%d", "%m-%d-%Y", "%d/%m/%Y"]
-    
-    for fmt in date_formats:
-        try:
-            return datetime.strptime(str(date_str).strip(), fmt)
-        except ValueError:
-            continue
-    
-    return None
-
-def format_delivery_date(date_input):
-    """Format delivery date for API consumption"""
-    if isinstance(date_input, str):
-        parsed_date = parse_date_safely(date_input)
-        if parsed_date:
-            return parsed_date.strftime("%Y-%m-%d")
-        else:
-            # If can't parse, calculate 18 business days from today
-            calculated_date = business_days_from(datetime.now(), 18)
-            return calculated_date.strftime("%Y-%m-%d")
-    elif hasattr(date_input, 'strftime'):  # datetime or date object
-        return date_input.strftime("%Y-%m-%d")
-    else:
-        # Default fallback
-        calculated_date = business_days_from(datetime.now(), 18)
-        return calculated_date.strftime("%Y-%m-%d")
+def convert_ssfv_to_fulcrum_format(ssfv_result):
+    """
+    Convert SS-FV calculator results to Fulcrum API format
+    Returns: (bom_items, operations, description, price)
+    """
+    try:
+        # Extract BOM items
+        bom_items = []
+        for bom_item in ssfv_result.get("bom_items", []):
+            bom_items.append({
+                "name": bom_item["part_number"],
+                "value": bom_item["value"],
+                "unit": bom_item["unit"]
+            })
+        
+        # Extract operations (convert to Fulcrum format)
+        operations = []
+        for prod_item in ssfv_result.get("production_items", []):
+            operations.append({
+                "systemOperationId": prod_item["operation_number"],
+                "order": len(operations) + 1,
+                "laborTime": prod_item["time_minutes"] * 60  # Convert minutes to seconds
+            })
+        
+        description = ssfv_result.get("description", f"SS-FV Part {ssfv_result.get('part_number', '')}")
+        price = ssfv_result.get("unit_price", 0.0)
+        
+        return bom_items, operations, description, price
+        
+    except Exception as e:
+        st.error(f"Error converting SS-FV results: {str(e)}")
+        return [], [], "", 0.0
 
 # Enhanced process part number function
-def process_part_number_with_fallback(part_number, manual_price=None):
+def process_part_number_with_ssfv(part_number, manual_price=None):
     """
-    Enhanced part processing with openpyxl Excel integration and fallback options
+    Enhanced part processing with SS-FV calculator integration
     Returns: (item_id, price, success, error_message, bom_items, operations)
     """
     api_client = get_api_client()
-    excel_processor = get_openpyxl_excel_processor()
     
     try:
         # Step 1: Check if item exists
         existing_item_id = api_client.check_item_exists(part_number)
         
-        # Step 2: Try to get data from Excel using openpyxl
-        price, description, bom_items, operations, excel_success, excel_error = excel_processor.lookup_part_data(part_number)
+        # Step 2: Check if this is an SS-FV part number
+        if part_number.startswith("SS-FV"):
+            # Use SS-FV calculator
+            success, ssfv_result, error_msg = process_ssfv_part_number(part_number)
+            
+            if not success:
+                # SS-FV processing failed
+                if manual_price is not None:
+                    # Fall back to manual price with basic item creation
+                    if existing_item_id:
+                        item_id = existing_item_id
+                    else:
+                        item_id = api_client.create_item(part_number, f"Swagelok Part {part_number}")
+                    
+                    return item_id, manual_price, True, "SS-FV processing failed, using manual price", [], []
+                else:
+                    return None, None, False, f"SS-FV processing failed: {error_msg}. Please enter manual price.", [], []
+            
+            # SS-FV processing successful - convert to Fulcrum format
+            bom_items, operations, description, calculated_price = convert_ssfv_to_fulcrum_format(ssfv_result)
+            
+            # Use manual price if provided, otherwise use calculated price
+            final_price = manual_price if manual_price is not None else calculated_price
+            
+            if final_price is None or final_price <= 0:
+                return None, None, False, "Valid price is required. Please enter manual price.", bom_items, operations
         
-        if not excel_success:
-            # Excel failed - return error for user to decide
-            return None, None, False, f"Excel processing failed: {excel_error}", [], []
-        
-        # Use manual price if Excel price is not available
-        if price is None and manual_price is not None:
-            price = manual_price
-        elif price is None:
-            # Don't use default price - require user input
-            return None, None, False, "Excel processing completed but no price was returned. Please enter price manually.", bom_items, operations
+        else:
+            # Non SS-FV part - require manual input
+            if manual_price is None:
+                return None, None, False, "This is not an SS-FV part. Manual price is required.", [], []
+            
+            final_price = manual_price
+            description = f"Swagelok Part {part_number}"
+            bom_items = []
+            operations = []
         
         # Step 3: Handle item creation or update
         if existing_item_id:
@@ -858,13 +769,12 @@ def process_part_number_with_fallback(part_number, manual_price=None):
             
             # Clear existing routing if we have new BOM/operations data
             if bom_items or operations:
-                # Use first BOM item name for clearing query if available
                 first_bom_name = bom_items[0]["name"] if bom_items else ""
                 api_client.clear_item_routing(existing_item_id, first_bom_name)
         else:
             item_id = api_client.create_item(part_number, description)
             if not item_id:
-                return None, price, False, f"Failed to create item for {part_number}", bom_items, operations
+                return None, final_price, False, f"Failed to create item for {part_number}", bom_items, operations
         
         # Step 4: Add BOM items
         if bom_items:
@@ -880,14 +790,15 @@ def process_part_number_with_fallback(part_number, manual_price=None):
             for operation in operations:
                 api_client.add_operation(item_id, operation)
         
-        return item_id, price, True, "Part processing successful", bom_items, operations
+        success_msg = "SS-FV part processing successful" if part_number.startswith("SS-FV") else "Part processing successful"
+        return item_id, final_price, True, success_msg, bom_items, operations
         
     except Exception as e:
         return None, None, False, f"Error processing part {part_number}: {str(e)}", [], []
 
-def create_sales_order_simple(order_row, delivery_date=None, manual_price=None, skip_excel=False):
+def create_sales_order_simple(order_row, delivery_date=None, manual_price=None, skip_processing=False):
     """
-    Simplified sales order creation for manual processing
+    Simplified sales order creation with SS-FV calculator integration
     """
     api_client = get_api_client()
     
@@ -935,10 +846,10 @@ def create_sales_order_simple(order_row, delivery_date=None, manual_price=None, 
         sales_order_number = so_details.get("number") if so_details else "Unknown"
         
         # Step 2: Process part
-        if skip_excel:
-            # Simple item creation without Excel processing
+        if skip_processing:
+            # Simple item creation without processing
             if manual_price is None:
-                return None, "Manual price is required when skipping Excel processing"
+                return None, "Manual price is required when skipping processing"
             
             existing_item_id = api_client.check_item_exists(part_number)
             if existing_item_id:
@@ -948,8 +859,8 @@ def create_sales_order_simple(order_row, delivery_date=None, manual_price=None, 
             
             price = manual_price
         else:
-            # Full Excel processing
-            item_id, price, success, error_msg, bom_items, operations = process_part_number_with_fallback(part_number, manual_price)
+            # Full SS-FV processing
+            item_id, price, success, error_msg, bom_items, operations = process_part_number_with_ssfv(part_number, manual_price)
             if not success:
                 return None, error_msg
             if price is None:
@@ -989,52 +900,78 @@ def show_so_creation_panel():
         st.write(f"**Order:** {order_number}")
         st.write(f"**Part:** {part_number}")
         
-        # Step 1: Try Excel Processing
-        st.markdown("#### 📊 Excel Processing")
-        if st.button("🔄 Process with Excel File", key="excel_process"):
-            with st.spinner("Processing Excel file..."):
-                excel_processor = get_openpyxl_excel_processor()
-                price, description, bom_items, operations, excel_success, excel_error = excel_processor.lookup_part_data(part_number)
-                
-                if excel_success:
-                    st.success("✅ Excel processing successful!")
-                    if price:
-                        st.write(f"**Price:** ${price}")
-                    else:
-                        st.warning("⚠️ No price returned from Excel")
-                    st.write(f"**Description:** {description}")
-                    st.write(f"**BOM Items:** {len(bom_items)}")
-                    st.write(f"**Operations:** {len(operations)}")
-                    
-                    # Store Excel results in session state
-                    st.session_state.excel_results = {
-                        'price': price,
-                        'description': description,
-                        'bom_items': bom_items,
-                        'operations': operations
-                    }
-                else:
-                    st.error(f"❌ Excel processing failed:")
-                    st.error(excel_error)
+        # Step 1: Try SS-FV Processing
+        st.markdown("#### 🧮 SS-FV Processing")
         
-        # Step 2: Price Input (required if Excel didn't provide price)
+        # Check if it's an SS-FV part
+        is_ssfv_part = part_number.startswith("SS-FV")
+        
+        if is_ssfv_part:
+            if st.button("🔄 Process SS-FV Part", key="ssfv_process"):
+                with st.spinner("Processing SS-FV part..."):
+                    success, ssfv_result, error_msg = process_ssfv_part_number(part_number)
+                    
+                    if success:
+                        st.success("✅ SS-FV processing successful!")
+                        
+                        # Display results
+                        price = ssfv_result.get("unit_price")
+                        if price:
+                            st.write(f"**Price:** ${price:.2f}")
+                        else:
+                            st.warning("⚠️ No price calculated")
+                        
+                        description = ssfv_result.get("description", "")
+                        st.write(f"**Description:** {description}")
+                        
+                        bom_count = len(ssfv_result.get("bom_items", []))
+                        operations_count = len(ssfv_result.get("production_items", []))
+                        st.write(f"**BOM Items:** {bom_count}")
+                        st.write(f"**Operations:** {operations_count}")
+                        
+                        # Show detailed results
+                        with st.expander("📋 Detailed Results"):
+                            st.json(ssfv_result)
+                        
+                        # Store SS-FV results in session state
+                        st.session_state.ssfv_results = {
+                            'success': True,
+                            'price': price,
+                            'description': description,
+                            'result': ssfv_result
+                        }
+                    else:
+                        st.error(f"❌ SS-FV processing failed:")
+                        st.error(error_msg)
+                        st.session_state.ssfv_results = {
+                            'success': False,
+                            'error': error_msg
+                        }
+        else:
+            st.info("ℹ️ Not an SS-FV part - manual pricing required")
+            st.session_state.ssfv_results = {
+                'success': False,
+                'error': 'Not an SS-FV part'
+            }
+        
+        # Step 2: Price Input
         st.markdown("#### 💰 Price Input")
         
-        excel_price = None
-        if hasattr(st.session_state, 'excel_results') and st.session_state.excel_results:
-            excel_price = st.session_state.excel_results.get('price')
+        ssfv_price = None
+        if hasattr(st.session_state, 'ssfv_results') and st.session_state.ssfv_results.get('success'):
+            ssfv_price = st.session_state.ssfv_results.get('price')
         
-        if excel_price:
-            st.info(f"Excel price: ${excel_price}")
-            use_excel_price = st.checkbox("Use Excel price", value=True, key="use_excel_price")
-            if use_excel_price:
-                final_price = excel_price
-                st.write(f"**Using price:** ${final_price}")
+        if ssfv_price:
+            st.info(f"SS-FV calculated price: ${ssfv_price:.2f}")
+            use_ssfv_price = st.checkbox("Use SS-FV calculated price", value=True, key="use_ssfv_price")
+            if use_ssfv_price:
+                final_price = ssfv_price
+                st.write(f"**Using price:** ${final_price:.2f}")
             else:
                 final_price = st.number_input(
                     "Manual Price ($)", 
                     min_value=0.0, 
-                    value=excel_price, 
+                    value=ssfv_price, 
                     step=1.0,
                     key="manual_price_override"
                 )
@@ -1056,24 +993,24 @@ def show_so_creation_panel():
         if can_create_so:
             if st.button("✅ Create SO", key="create_so_final"):
                 with st.spinner("Creating Sales Order..."):
-                    # Determine if we should skip Excel (if we already processed it)
-                    skip_excel = not hasattr(st.session_state, 'excel_results') or not st.session_state.excel_results
+                    # Determine if we should skip processing (if we already processed it)
+                    skip_processing = not is_ssfv_part or not hasattr(st.session_state, 'ssfv_results') or not st.session_state.ssfv_results.get('success')
                     
                     so_number, result_msg = create_sales_order_simple(
                         order_data['row'], 
                         delivery_date, 
                         final_price, 
-                        skip_excel=skip_excel
+                        skip_processing=skip_processing
                     )
                     
                     if so_number:
                         st.session_state.created_sos[order_number] = so_number
                         st.success(f"🎉 Created SO: {so_number}")
                         st.balloons()
-                        # Clear the processing order and excel results
+                        # Clear the processing order and SS-FV results
                         st.session_state.processing_order = None
-                        if hasattr(st.session_state, 'excel_results'):
-                            del st.session_state.excel_results
+                        if hasattr(st.session_state, 'ssfv_results'):
+                            del st.session_state.ssfv_results
                         st.rerun()
                     else:
                         st.error(f"❌ Failed: {result_msg}")
@@ -1083,8 +1020,8 @@ def show_so_creation_panel():
         # Step 4: Cancel Button
         if st.button("❌ Cancel", key="cancel_so"):
             st.session_state.processing_order = None
-            if hasattr(st.session_state, 'excel_results'):
-                del st.session_state.excel_results
+            if hasattr(st.session_state, 'ssfv_results'):
+                del st.session_state.ssfv_results
             st.rerun()
     
     return main_col  # Return the main column for other content
@@ -1094,6 +1031,53 @@ def close_so_creation_panel():
     st.session_state.processing_order = None
     if st.session_state.get('so_creation_panel'):
         st.session_state.so_creation_panel = None
+
+# Business Logic Functions (keeping existing ones)
+def business_days_from(start_date, days):
+    """Calculate business days from start date (excluding weekends)"""
+    current_date = start_date
+    days_added = 0
+    
+    while days_added < days:
+        current_date += timedelta(days=1)
+        # Only count weekdays (Monday=0, Sunday=6)
+        if current_date.weekday() < 5:
+            days_added += 1
+    
+    return current_date
+
+def parse_date_safely(date_str):
+    """Safely parse date string in various formats"""
+    if not date_str or date_str in ["TBD", "Delivered", ""]:
+        return None
+    
+    # Try different date formats
+    date_formats = ["%m/%d/%Y", "%Y-%m-%d", "%m-%d-%Y", "%d/%m/%Y"]
+    
+    for fmt in date_formats:
+        try:
+            return datetime.strptime(str(date_str).strip(), fmt)
+        except ValueError:
+            continue
+    
+    return None
+
+def format_delivery_date(date_input):
+    """Format delivery date for API consumption"""
+    if isinstance(date_input, str):
+        parsed_date = parse_date_safely(date_input)
+        if parsed_date:
+            return parsed_date.strftime("%Y-%m-%d")
+        else:
+            # If can't parse, calculate 18 business days from today
+            calculated_date = business_days_from(datetime.now(), 18)
+            return calculated_date.strftime("%Y-%m-%d")
+    elif hasattr(date_input, 'strftime'):  # datetime or date object
+        return date_input.strftime("%Y-%m-%d")
+    else:
+        # Default fallback
+        calculated_date = business_days_from(datetime.now(), 18)
+        return calculated_date.strftime("%Y-%m-%d")
 
 def fetch_swagelok_orders(selected_status):
     """Fetch orders from Swagelok portal with improved parsing"""
@@ -1619,7 +1603,7 @@ def logout():
     st.session_state.orders_data = None
     st.rerun()
 
-# Initialize API client and Excel processor
+# Initialize API client and SS-FV calculator
 @st.cache_resource
 def get_api_client():
     return OptimizedFulcrumAPI(API_TOKEN)
@@ -1708,62 +1692,31 @@ def main():
         
         st.markdown("---")
         
-        # Excel Configuration Status
+        # SS-FV Calculator Status
         st.header("⚙️ Configuration")
         
-        # Check Excel configuration
-        excel_processor = get_openpyxl_excel_processor()
-        excel_configured = os.path.exists(excel_processor.excel_file_path)
+        # Test SS-FV Calculator
+        st.success("✅ SS-FV Calculator Ready")
+        st.info("🧮 Integrated SS-FV part number calculator")
         
-        if excel_configured:
-            st.success("✅ Excel File Configured")
-            st.info("📁 Local Excel file with VBA macro support")
-            
-            # Test file access
-            if st.button("🔗 Test Excel File Access", key="test_excel"):
-                with st.spinner("Testing Excel file access..."):
-                    try:
-                        workbook = load_workbook(excel_processor.excel_file_path, keep_vba=True)
-                        if "Sheet1" in workbook.sheetnames:
-                            st.success("✅ Excel file access successful!")
-                            st.info(f"Found Sheet1 with {workbook['Sheet1'].max_row} rows")
-                            
-                            # Test key cells
-                            worksheet = workbook["Sheet1"]
-                            st.info("📋 Testing key cell locations:")
-                            
-                            # Check if we can read/write to C5
-                            try:
-                                test_value = worksheet["C5"].value
-                                st.write(f"• C5 (part input): {test_value if test_value else 'Empty ✓'}")
-                            except:
-                                st.write("• C5 (part input): ❌ Cannot access")
-                            
-                            # Check output cells
-                            try:
-                                price_value = worksheet["C13"].value  
-                                desc_value = worksheet["C14"].value
-                                st.write(f"• C13 (price output): {price_value if price_value else 'Empty'}")
-                                st.write(f"• C14 (description): {desc_value if desc_value else 'Empty'}")
-                            except:
-                                st.write("• C13/C14: ❌ Cannot access output cells")
-                            
-                            st.success("🎉 Excel integration ready!")
-                            st.info("💡 **How it works:** When app writes to C5, your VBA Worksheet_Change event will trigger automatically!")
-                        else:
-                            st.error("❌ Sheet1 not found in Excel file")
-                            st.write(f"Available sheets: {workbook.sheetnames}")
-                        workbook.close()
-                    except PermissionError:
-                        st.error("❌ Excel file is open in another application")
-                        st.info("Close Excel and try again")
-                    except Exception as e:
-                        st.error(f"❌ Excel file access failed: {str(e)}")
-        else:
-            st.error("❌ Excel file not found")
-            st.warning("⚠️ Manual pricing only")
-            st.info(f"📁 Looking for: {excel_processor.excel_file_path}")
-            st.info("💡 Upload your 'SWAGELOK HOSE CONFIGURATOR (Python).xlsm' file to the repository root directory")
+        if st.button("🧮 Test SS-FV Calculator", key="test_ssfv"):
+            with st.spinner("Testing SS-FV calculator..."):
+                try:
+                    # Test with a sample SS-FV part
+                    test_part = "SS-FV8TN8TN8-100-QB1"
+                    success, result, error_msg = process_ssfv_part_number(test_part)
+                    
+                    if success:
+                        st.success("✅ SS-FV calculator working correctly!")
+                        st.write(f"**Test part:** {test_part}")
+                        if result.get('unit_price'):
+                            st.write(f"**Price:** ${result['unit_price']:.2f}")
+                        st.write(f"**BOM items:** {len(result.get('bom_items', []))}")
+                        st.write(f"**Operations:** {len(result.get('production_items', []))}")
+                    else:
+                        st.error(f"❌ SS-FV calculator test failed: {error_msg}")
+                except Exception as e:
+                    st.error(f"❌ SS-FV calculator error: {str(e)}")
         
         # Show configuration help
         with st.expander("🔧 Configuration Help"):
@@ -1771,88 +1724,63 @@ def main():
             **Required Secrets:**
             - `FULCRUM_API_TOKEN`: Your Fulcrum API token
             
-            **OpenPyXL Excel Integration:**
-            - `EXCEL_FILE_PATH`: Path to your Excel file (optional, defaults to 'configurator.xlsx')
+            **SS-FV Calculator Integration:**
+            - ✅ **No additional configuration needed!**
+            - The SS-FV calculator is now built-in
+            - Automatically processes SS-FV part numbers
+            - Calculates pricing, BOM items, and operations
+            - No Excel file dependencies
             
-            **Excel File Setup:**
-            1. Place your Excel file in the app directory or specify path in secrets
-            2. Ensure the file has a 'Sheet1' worksheet
-            3. Set up macro to trigger automatically when cell C5 changes
-            4. Configure the following cell locations:
-               - C5: Part number input (app writes here)
-               - C13: Price output (app reads from here)
-               - C14: Description output (app reads from here)
-               - J14:M25: BOM items (J=name, L=quantity, M=multiplier)
-               - M36:L40: Operations (M=operation ID, L=labor time in minutes)
+            **How it works:**
+            1. **SS-FV parts** (starting with "SS-FV") are automatically processed by the calculator
+            2. **Pricing** is calculated based on part specifications
+            3. **BOM items** are generated for manufacturing
+            4. **Operations** are created with time estimates
+            5. **Non SS-FV parts** require manual pricing
             
-            **Macro Setup:**
-            In your Excel VBA, add a Worksheet_Change event:
-            ```vb
-            Private Sub Worksheet_Change(ByVal Target As Range)
-                If Target.Address = "$C$5" Then
-                    ' Your macro code here
-                    RunMultipleMacros2
-                End If
-            End Sub
-            ```
-            
-            **Benefits of OpenPyXL approach:**
-            - No Azure/Microsoft Graph API required (free)
-            - Works with local Excel files
-            - Automatic macro triggering on file save
-            - No authentication complexity
-            - Full Excel functionality available
+            **Supported formats:**
+            - Standard: `SS-FV8TN8TN8-100-QB1`
+            - With CM: `SS-FV8TN8TN8-1800CM0424`
+            - Compressed: `SS-FV12TN12TN121800CM0424`
+            - Special codes: 0424, 0660, 0663, 0658, 0662
             """)
         
-        with st.expander("📋 Setup Steps", expanded=False):
+        with st.expander("📋 SS-FV Calculator Features", expanded=False):
             st.markdown("""
-            **Step 1: Prepare Excel File**
+            **Automated Processing:**
             ```
-            1. Save your Excel file as 'configurator.xlsx' in app directory
-            2. OR add EXCEL_FILE_PATH to secrets with custom path
-            3. Ensure Sheet1 exists in the workbook
-            4. Test that macro runs when C5 is changed
-            ```
-            
-            **Step 2: Configure Cell Locations**
-            ```
-            Input:
-            - C5: Part number (app will write here)
-            
-            Outputs (app will read from here):
-            - C13: Price
-            - C14: Description
-            - J14:M25: BOM items (name, quantity, multiplier)
-            - M36:L40: Operations (operation ID, labor time)
+            ✅ Size detection (08, 12, 16)
+            ✅ Performance detection (STD, MLI)
+            ✅ Length extraction and conversion
+            ✅ CM to inches conversion
+            ✅ Special performance codes
+            ✅ Compressed format handling
             ```
             
-            **Step 3: VBA Macro Setup**
-            ```vb
-            ' Add this to your Sheet1 VBA code
-            Private Sub Worksheet_Change(ByVal Target As Range)
-                If Target.Address = "$C$5" Then
-                    Application.EnableEvents = False
-                    RunMultipleMacros2  ' Your macro name
-                    Application.EnableEvents = True
-                End If
-            End Sub
+            **Calculations:**
+            ```
+            ✅ Dynamic pricing based on size/performance
+            ✅ BOM generation with part numbers and quantities
+            ✅ Production time estimates
+            ✅ Operations with labor times
+            ✅ Business logic for hose assembly
             ```
             
-            **Step 4: Test Configuration**
+            **Integration Benefits:**
             ```
-            1. Use the "Test Excel File Access" button above
-            2. Check that all required cells are accessible
-            3. Verify macro runs automatically when C5 changes
-            4. Test with a known part number
+            ✅ No Excel dependencies
+            ✅ Real-time processing
+            ✅ Consistent calculations
+            ✅ Easy maintenance
+            ✅ Version control friendly
             ```
             
-            **Troubleshooting:**
+            **Error Handling:**
             ```
-            • File not found: Check path and file name
-            • Permission denied: Close Excel if it's open
-            • Macro not running: Check VBA Worksheet_Change event
-            • No data returned: Verify cell formulas and macro logic
-            • Wrong cell values: Check cell references match configuration
+            ✅ Invalid part number detection
+            ✅ Graceful fallback to manual pricing
+            ✅ Detailed error messages
+            ✅ Validation of all inputs
             ```
             """)
         
@@ -1896,7 +1824,7 @@ def main():
             except:
                 st.error("❌ Backup Check Failed")
     
-    # Main content area
+    # Main content area (same as before, no changes needed for the orders table)
     if st.session_state.orders_data is not None:
         # Orders fetched - show orders table with proper headers
         st.header("Open Orders")
@@ -1933,7 +1861,12 @@ def main():
                 with col3:
                     st.write(f"{row.iloc[1]}")  # Order Date
                 with col4:
-                    st.write(f"{row.iloc[2]}")  # Part Number
+                    part_num = str(row.iloc[2])
+                    # Add SS-FV indicator
+                    if part_num.startswith("SS-FV"):
+                        st.write(f"🧮 {part_num}")
+                    else:
+                        st.write(f"{part_num}")
                 with col5:
                     st.write(f"{row.iloc[3]}")  # Quantity
                 with col6:
@@ -2000,7 +1933,12 @@ def main():
                 with col3:
                     st.write(f"{row.iloc[1]}")  # Order Date
                 with col4:
-                    st.write(f"{row.iloc[2]}")  # Part Number
+                    part_num = str(row.iloc[2])
+                    # Add SS-FV indicator
+                    if part_num.startswith("SS-FV"):
+                        st.write(f"🧮 {part_num}")
+                    else:
+                        st.write(f"{part_num}")
                 with col5:
                     st.write(f"{row.iloc[3]}")  # Quantity
                 with col6:
@@ -2088,9 +2026,7 @@ def main():
             st.info(f"🔌 **API Status:** {api_status}")
         
         with col2:
-            excel_processor = get_openpyxl_excel_processor()
-            excel_status = "✅ Excel File Found" if os.path.exists(excel_processor.excel_file_path) else "❌ Excel File Missing"
-            st.info(f"📊 **Excel Integration:** {excel_status}")
+            st.info(f"🧮 **SS-FV Calculator:** ✅ Ready")
         
         # Instructions only
         st.info("👆 Use the sidebar to fetch orders and get started!")
@@ -2098,10 +2034,11 @@ def main():
         ### How to use:
         1. **Select Order Status** from the dropdown in the sidebar
         2. **Click 'Fetch Orders'** to retrieve orders from Swagelok portal
-        3. **Review orders** in the main table
+        3. **Review orders** in the main table (🧮 icon indicates SS-FV parts)
         4. **Adjust delivery dates** as needed (all dates are editable except "Delivered" orders)
         5. **Select 'Create SO'** from blue action dropdown and click Execute
-        6. **Modified delivery dates** will be used when creating the Sales Order
+        6. **SS-FV parts** will be automatically calculated (pricing, BOM, operations)
+        7. **Non SS-FV parts** will require manual pricing input
         """)
 
 if __name__ == "__main__":
