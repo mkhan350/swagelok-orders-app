@@ -40,29 +40,6 @@ st.markdown("""
     font-weight: bold !important;
     color: #2e7d32 !important;
 }
-
-/* SO Creation Panel Styling */
-.so-panel {
-    position: fixed;
-    top: 80px;
-    right: 20px;
-    width: 400px;
-    background: white;
-    border: 2px solid #0066cc;
-    border-radius: 10px;
-    padding: 20px;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-    z-index: 1000;
-    max-height: 80vh;
-    overflow-y: auto;
-}
-
-.so-panel h3 {
-    color: #0066cc;
-    margin-top: 0;
-    border-bottom: 2px solid #0066cc;
-    padding-bottom: 10px;
-}
 </style>
 """, unsafe_allow_html=True)
 
@@ -895,7 +872,17 @@ def show_so_creation_panel():
     order_number = str(order_data['row'][0])
     part_number = str(order_data['row'][2])
     delivery_date = order_data.get('delivery_date')
-     
+    
+    # Create a container for the floating panel
+    panel_html = f"""
+    <div class="so-panel">
+        <h3>🔧 Creating Sales Order</h3>
+        <p><strong>Order:</strong> {order_number}</p>
+        <p><strong>Part:</strong> {part_number}</p>
+        <p><strong>Delivery:</strong> {delivery_date if delivery_date else 'TBD'}</p>
+    </div>
+    """
+    
     # Display the floating panel HTML
     st.markdown(panel_html, unsafe_allow_html=True)
     
@@ -1891,7 +1878,6 @@ def display_main_content():
         st.markdown(f"# WELCOME **{st.session_state.current_user['first_name'].upper()}**")
         st.markdown("---")
         
-       
         # Instructions only
         st.info("👆 Use the sidebar to fetch orders and get started!")
         st.markdown("""
