@@ -889,107 +889,90 @@ def show_so_creation_panel():
     part_number = str(order_data['row'][2])
     delivery_date = order_data.get('delivery_date')
     
-    # Create two columns - main content and SO creation panel  
-    main_col, so_panel_col = st.columns([2, 1])
+    st.markdown("### Creating Sales Order")
+    st.write(f"**Order:** {order_number}")
+    st.write(f"**Part:** {part_number}")
     
-    with so_panel_col:
-        st.markdown("### Creating Sales Order")
-        st.write(f"**Order:** {order_number}")
-        st.write(f"**Part:** {part_number}")
-        
-        # Check if it's an SS-FV part
-        is_ssfv_part = part_number.startswith("SS-FV")
-        
-        # Auto-process SS-FV parts
-        if is_ssfv_part and not hasattr(st.session_state, 'ssfv_results'):
-            with st.spinner("Processing SS-FV part..."):
-                success, ssfv_result, error_msg = process_ssfv_part_number(part_number)
-                
-                if success:
-                    price = ssfv_result.get("unit_price")
-                    description = ssfv_result.get("description", "")
-                    bom_count = len(ssfv_result.get("bom_items", []))
-                    operations_count = len(ssfv_result.get("production_items", []))
-                    
-                    st.session_state.ssfv_results = {
-                        'success': True,
-                        'price': price,
-                        'description': description,
-                        'result': ssfv_result
-                    }
-                else:
-                    st.session_state.ssfv_results = {
-                        'success': False,
-                        'error': error_msg
-                    }
-        
-        # Price Input
-        st.markdown("#### Price Input")
-        
-        ssfv_price = None
-        if hasattr(st.session_state, 'ssfv_results') and st.session_state.ssfv_results.get('success'):
-            ssfv_price = st.session_state.ssfv_results.get('price')
-        
-        if ssfv_price:
-            st.info(f"SS-FV calculated price: ${ssfv_price:.2f}")
-            use_ssfv_price = st.checkbox("Use SS-FV calculated price", value=True, key="use_ssfv_price")
-            if use_ssfv_price:
-                final_price = ssfv_price
-                st.write(f"**Using price:** ${final_price:.2f}")
-            else:
-                final_price = st.number_input(
-                    "Manual Price ($)", 
-                    min_value=0.0, 
-                    value=ssfv_price, 
-                    step=1.0,
-                    key="manual_price_override"
-                )
-        else:
-            if is_ssfv_part and hasattr(st.session_state, 'ssfv_results'):
-                st.error(f"SS-FV processing failed: {st.session_state.ssfv_results.get('error', 'Unknown error')}")
+    # Check if it's an SS-FV part
+    is_ssfv_part = part_number.startswith("SS-FV")
+    
+    # Auto-process SS-FV parts
+    if is_ssfv_part and not hasattr(st.session_state, 'ssfv_results'):
+        with st.spinner("Processing SS-FV part..."):
+            success, ssfv_result, error_msg = process_ssfv_part_number(part_number)
             
-            final_price = st.number_input(
-                "Enter Price ($)", 
-                min_value=0.0, 
-                value=0.0, 
-                step=1.0,
-                key="required_manual_price"
-            )
-        
-        # Action buttons
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            if st.button("Create SO", key="create_so_final", disabled=(final_price <= 0)):
-                with st.spinner("Creating Sales Order..."):
-                    skip_processing = not is_ssfv_part or not hasattr(st.session_state, 'ssfv_results') or not st.session_state.ssfv_results.get('success')
-                    
-                    so_number, result_msg = create_sales_order_simple(
-                        order_data['row'], 
-                        delivery_date, 
-                        final_price, 
-                        skip_processing=skip_processing
-                    )
-                    
-                    if so_number:
-                        st.session_state.created_sos[order_number] = so_number
-                        st.success(f"🎉 Created SO: {so_number}")
-                        # Clear the processing order and results but stay on same page
-                        st.session_state.processing_order = None
-                        if hasattr(st.session_state, 'ssfv_results'):
-                            del st.session_state.ssfv_results
-                        st.rerun()
-                    else:
-                        st.error(f"❌ Failed: {result_msg}")
-        
-        with col2:
-            if st.button("Cancel", key="cancel_so"):
-                st.session_state.processing_order = None
-                if hasattr(st.session_state, 'ssfv_results'):
-                    del st.session_state.ssfv_results
-                st.rerun()
+            if success:
+                price = ssfv_result.get("unit_price")
+                description = ssfv_result.get("description", "")
+                bom_count = len(ssfv_result.get("bom_items", []))
+                operations_count = len(ssfv_result.get("production_items", []))
+                
+                st.session_state.ssfv_results = {
+                    'success': True,
+                    'price': price,
+                    'description': description,
+                    'result': ssfv_result
+                }
+            else:
+                st.session_state.ssfv_results = {
+                    'success': False,
+                    'error': error_msg
+                }
     
-    return main_col  # Return the main column for other content
+    # Price Input - Always show editable field
+    st.markdown("#### Price Input")
+    
+    # Get SS-FV calculated price if available
+    calculated_price = 0.0
+    if hasattr(st.session_state, 'ssfv_results') and st.session_state.ssfv_results.get('success'):
+        calculated_price = st.session_state.ssfv_results.get('price', 0.0) or 0.0
+        if calculated_price > 0:
+            st.info(f"✅ SS-FV calculated price: ${calculated_price:.2f}")
+    elif is_ssfv_part and hasattr(st.session_state, 'ssfv_results'):
+        st.error(f"❌ SS-FV processing failed: {st.session_state.ssfv_results.get('error', 'Unknown error')}")
+        st.warning("Please enter price manually")
+    
+    # Always show editable price field
+    final_price = st.number_input(
+        "Enter Price ($)", 
+        min_value=0.0, 
+        value=float(calculated_price), 
+        step=1.0,
+        key="price_input"
+    )
+    
+    # Action buttons
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button("Create SO", key="create_so_final", disabled=(final_price <= 0)):
+            with st.spinner("Creating Sales Order..."):
+                skip_processing = not is_ssfv_part or not hasattr(st.session_state, 'ssfv_results') or not st.session_state.ssfv_results.get('success')
+                
+                so_number, result_msg = create_sales_order_simple(
+                    order_data['row'], 
+                    delivery_date, 
+                    final_price, 
+                    skip_processing=skip_processing
+                )
+                
+                if so_number:
+                    st.session_state.created_sos[order_number] = so_number
+                    st.success(f"🎉 Created SO: {so_number}")
+                    # Clear the processing order and results but stay on same page
+                    st.session_state.processing_order = None
+                    if hasattr(st.session_state, 'ssfv_results'):
+                        del st.session_state.ssfv_results
+                    st.rerun()
+                else:
+                    st.error(f"❌ Failed: {result_msg}")
+    
+    with col2:
+        if st.button("Cancel", key="cancel_so"):
+            st.session_state.processing_order = None
+            if hasattr(st.session_state, 'ssfv_results'):
+                del st.session_state.ssfv_results
+            st.rerun()
 
 def close_so_creation_panel():
     """Close the SO creation panel"""
