@@ -28,7 +28,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# Custom CSS for action column styling
+# Custom CSS for better styling
 st.markdown("""
 <style>
 .success-action {
@@ -44,15 +44,50 @@ st.markdown("""
 .action-column {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 2px;
+    align-items: stretch;
 }
 
-.action-column .stSelectbox {
-    margin-bottom: 4px;
+.action-column .stSelectbox > div > div {
+    height: 38px;
+    min-height: 38px;
 }
 
-.action-column .stButton {
-    margin-top: 4px;
+.action-column .stButton > button {
+    height: 38px;
+    min-height: 38px;
+    margin: 0;
+    padding: 0 12px;
+}
+
+/* Fix selectbox alignment */
+.stSelectbox > div > div > div {
+    height: 38px;
+    display: flex;
+    align-items: center;
+}
+
+/* SO Creation Panel Styling */
+.so-panel {
+    position: fixed;
+    top: 80px;
+    right: 20px;
+    width: 400px;
+    background: white;
+    border: 2px solid #0066cc;
+    border-radius: 10px;
+    padding: 20px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    z-index: 1000;
+    max-height: 80vh;
+    overflow-y: auto;
+}
+
+.so-panel h3 {
+    color: #0066cc;
+    margin-top: 0;
+    border-bottom: 2px solid #0066cc;
+    padding-bottom: 10px;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -391,8 +426,6 @@ if 'updated_delivery_dates' not in st.session_state:
     st.session_state.updated_delivery_dates = {}
 if 'current_user' not in st.session_state:
     st.session_state.current_user = None
-if 'so_creation_panel' not in st.session_state:
-    st.session_state.so_creation_panel = None
 if 'processing_order' not in st.session_state:
     st.session_state.processing_order = None
 
@@ -880,7 +913,7 @@ def create_sales_order_simple(order_row, delivery_date=None, manual_price=None, 
         return None, f"Error creating sales order: {str(e)}"
 
 def show_so_creation_panel():
-    """Show the SO creation panel on the right side of main window"""
+    """Show the SO creation panel as a floating div on the right side"""
     if not st.session_state.processing_order:
         return None
     
@@ -889,93 +922,125 @@ def show_so_creation_panel():
     part_number = str(order_data['row'][2])
     delivery_date = order_data.get('delivery_date')
     
-    st.markdown("### Creating Sales Order")
-    st.write(f"**Order:** {order_number}")
-    st.write(f"**Part:** {part_number}")
+    # Create a container for the floating panel
+    panel_html = f"""
+    <div class="so-panel">
+        <h3>🔧 Creating Sales Order</h3>
+        <p><strong>Order:</strong> {order_number}</p>
+        <p><strong>Part:</strong> {part_number}</p>
+        <p><strong>Delivery:</strong> {delivery_date if delivery_date else 'TBD'}</p>
+    </div>
+    """
     
-    # Check if it's an SS-FV part
-    is_ssfv_part = part_number.startswith("SS-FV")
+    # Display the floating panel HTML
+    st.markdown(panel_html, unsafe_allow_html=True)
     
-    # Auto-process SS-FV parts
-    if is_ssfv_part and not hasattr(st.session_state, 'ssfv_results'):
-        with st.spinner("Processing SS-FV part..."):
-            success, ssfv_result, error_msg = process_ssfv_part_number(part_number)
-            
-            if success:
-                price = ssfv_result.get("unit_price")
-                description = ssfv_result.get("description", "")
-                bom_count = len(ssfv_result.get("bom_items", []))
-                operations_count = len(ssfv_result.get("production_items", []))
-                
-                st.session_state.ssfv_results = {
-                    'success': True,
-                    'price': price,
-                    'description': description,
-                    'result': ssfv_result
-                }
-            else:
-                st.session_state.ssfv_results = {
-                    'success': False,
-                    'error': error_msg
-                }
-    
-    # Price Input - Always show editable field
-    st.markdown("#### Price Input")
-    
-    # Get SS-FV calculated price if available
-    calculated_price = 0.0
-    if hasattr(st.session_state, 'ssfv_results') and st.session_state.ssfv_results.get('success'):
-        calculated_price = st.session_state.ssfv_results.get('price', 0.0) or 0.0
-        if calculated_price > 0:
-            st.info(f"✅ SS-FV calculated price: ${calculated_price:.2f}")
-    elif is_ssfv_part and hasattr(st.session_state, 'ssfv_results'):
-        st.error(f"❌ SS-FV processing failed: {st.session_state.ssfv_results.get('error', 'Unknown error')}")
-        st.warning("Please enter price manually")
-    
-    # Always show editable price field
-    final_price = st.number_input(
-        "Enter Price ($)", 
-        min_value=0.0, 
-        value=float(calculated_price), 
-        step=1.0,
-        key="price_input"
-    )
-    
-    # Action buttons
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        if st.button("Create SO", key="create_so_final", disabled=(final_price <= 0)):
-            with st.spinner("Creating Sales Order..."):
-                skip_processing = not is_ssfv_part or not hasattr(st.session_state, 'ssfv_results') or not st.session_state.ssfv_results.get('success')
-                
-                so_number, result_msg = create_sales_order_simple(
-                    order_data['row'], 
-                    delivery_date, 
-                    final_price, 
-                    skip_processing=skip_processing
-                )
-                
-                if so_number:
-                    st.session_state.created_sos[order_number] = so_number
-                    st.success(f"🎉 Created SO: {so_number}")
-                    # Clear the processing order and results but stay on same page
-                    st.session_state.processing_order = None
-                    if hasattr(st.session_state, 'ssfv_results'):
-                        del st.session_state.ssfv_results
-                    st.rerun()
-                else:
-                    st.error(f"❌ Failed: {result_msg}")
+    # Create columns to position the actual form on the right
+    col1, col2 = st.columns([3, 1])
     
     with col2:
-        if st.button("Cancel", key="cancel_so"):
-            st.session_state.processing_order = None
-            if hasattr(st.session_state, 'ssfv_results'):
-                del st.session_state.ssfv_results
-            st.rerun()
+        st.markdown("### Creating Sales Order")
+        st.write(f"**Order:** {order_number}")
+        st.write(f"**Part:** {part_number}")
+        
+        # Check if it's an SS-FV part
+        is_ssfv_part = part_number.startswith("SS-FV")
+        
+        # Auto-process SS-FV parts (only once)
+        if is_ssfv_part and not hasattr(st.session_state, 'ssfv_results'):
+            with st.spinner("Processing SS-FV part..."):
+                success, ssfv_result, error_msg = process_ssfv_part_number(part_number)
+                
+                if success:
+                    price = ssfv_result.get("unit_price", 0.0)
+                    description = ssfv_result.get("description", "")
+                    bom_count = len(ssfv_result.get("bom_items", []))
+                    operations_count = len(ssfv_result.get("production_items", []))
+                    
+                    st.session_state.ssfv_results = {
+                        'success': True,
+                        'price': price or 0.0,
+                        'description': description,
+                        'result': ssfv_result
+                    }
+                else:
+                    st.session_state.ssfv_results = {
+                        'success': False,
+                        'error': error_msg
+                    }
+        
+        # Price Input Section - Always show editable field
+        st.markdown("#### Price Input")
+        
+        # Get calculated or default price
+        default_price = 0.0
+        if hasattr(st.session_state, 'ssfv_results'):
+            if st.session_state.ssfv_results.get('success'):
+                default_price = st.session_state.ssfv_results.get('price', 0.0) or 0.0
+                if default_price > 0:
+                    st.success(f"✅ SS-FV calculated price: ${default_price:.2f}")
+                else:
+                    st.warning("⚠️ SS-FV calculation returned $0.00")
+            else:
+                st.error(f"❌ SS-FV failed: {st.session_state.ssfv_results.get('error', 'Unknown error')}")
+                st.warning("⚠️ Please enter price manually")
+        elif is_ssfv_part:
+            st.info("🔄 SS-FV processing not attempted yet")
+        else:
+            st.info("💰 Manual price required for non-SS-FV parts")
+        
+        # Always show editable price field - this fixes the main issue
+        final_price = st.number_input(
+            "Enter/Edit Price ($)", 
+            min_value=0.0, 
+            value=float(default_price), 
+            step=0.01,
+            key="price_input",
+            help="Price is editable - modify as needed"
+        )
+        
+        # Show processing status if available
+        if hasattr(st.session_state, 'ssfv_results') and st.session_state.ssfv_results.get('success'):
+            result = st.session_state.ssfv_results['result']
+            bom_count = len(result.get("bom_items", []))
+            ops_count = len(result.get("production_items", []))
+            if bom_count > 0 or ops_count > 0:
+                st.info(f"📋 Will add {bom_count} BOM items, {ops_count} operations")
+        
+        # Action buttons
+        col_btn1, col_btn2 = st.columns(2)
+        
+        with col_btn1:
+            if st.button("✅ Create SO", key="create_so_final", disabled=(final_price <= 0)):
+                with st.spinner("Creating Sales Order..."):
+                    skip_processing = not is_ssfv_part or not hasattr(st.session_state, 'ssfv_results') or not st.session_state.ssfv_results.get('success')
+                    
+                    so_number, result_msg = create_sales_order_simple(
+                        order_data['row'], 
+                        delivery_date, 
+                        final_price, 
+                        skip_processing=skip_processing
+                    )
+                    
+                    if so_number:
+                        st.session_state.created_sos[order_number] = so_number
+                        st.success(f"🎉 Created SO: {so_number}")
+                        # Clear the processing order and results
+                        close_so_creation_panel()
+                        st.rerun()
+                    else:
+                        st.error(f"❌ Failed: {result_msg}")
+        
+        with col_btn2:
+            if st.button("❌ Cancel", key="cancel_so"):
+                close_so_creation_panel()
+                st.rerun()
+    
+    # Make sure main content is in col1 to not be pushed down
+    return col1
 
 def close_so_creation_panel():
-    """Close the SO creation panel"""
+    """Close the SO creation panel and clean up"""
     st.session_state.processing_order = None
     if hasattr(st.session_state, 'ssfv_results'):
         del st.session_state.ssfv_results
@@ -1578,10 +1643,6 @@ def main():
         login_form()
         return
     
-    # Show SO creation panel if active
-    if st.session_state.processing_order:
-        show_so_creation_panel()
-    
     # Get current user info from session
     current_user = st.session_state.current_user
     
@@ -1600,6 +1661,9 @@ def main():
     if st.session_state.get('show_change_password', False):
         change_password_form()
         return
+    
+    # Show SO creation panel if active - this returns the main content column
+    main_content_col = show_so_creation_panel()
     
     # Sidebar for controls and account
     with st.sidebar:
@@ -1641,16 +1705,7 @@ def main():
             st.markdown("---")
             st.warning("⚠️ SO Creation Panel Active")
             if st.button("🔄 Clear Panel", help="Clear the SO creation panel if stuck"):
-                st.session_state.processing_order = None
-                st.rerun()
-        
-        # Add Back to Home button when needed
-        if st.session_state.get('show_create_user', False) or st.session_state.get('show_view_users', False) or st.session_state.get('show_change_password', False):
-            st.markdown("---")
-            if st.button("← Back to Home", use_container_width=True):
-                st.session_state.show_create_user = False
-                st.session_state.show_view_users = False
-                st.session_state.show_change_password = False
+                close_so_creation_panel()
                 st.rerun()
         
         st.markdown("---")
@@ -1693,7 +1748,15 @@ def main():
             except:
                 st.error("❌ Backup Check Failed")
     
-    # Main content area (same as before, no changes needed for the orders table)
+    # Main content area - use the column from SO panel if active
+    if main_content_col:
+        with main_content_col:
+            display_main_content()
+    else:
+        display_main_content()
+
+def display_main_content():
+    """Display the main content (orders table or welcome screen)"""
     if st.session_state.orders_data is not None:
         # Orders fetched - show orders table with proper headers
         st.header("Open Orders")
@@ -1771,26 +1834,16 @@ def main():
                     if order_number in st.session_state.created_sos:
                         st.markdown(f'<div class="success-action">✅ SO: {st.session_state.created_sos[order_number]}</div>', unsafe_allow_html=True)
                     else:
-                        # Create container with blue background for action elements
-                        action_container = st.container()
-                        with action_container:
-                            st.markdown('<div class="action-column">', unsafe_allow_html=True)
-                            action = st.selectbox(
-                                "Action",
-                                ["Select Action", "Create SO"],
-                                key=f"action_{idx}",
-                                label_visibility="collapsed"
-                            )
-                            if action == "Create SO":
-                                if st.button(f"Execute", key=f"execute_{idx}"):
-                                    # Set up the SO creation panel
-                                    st.session_state.processing_order = {
-                                        'row': row.tolist(),
-                                        'delivery_date': delivery_date if delivery_date is not None else str(row.iloc[5]),
-                                        'order_number': order_number
-                                    }
-                                    st.rerun()
-                            st.markdown('</div>', unsafe_allow_html=True)
+                        # Fixed action column - only show dropdown, no execute button
+                        st.markdown('<div class="action-column">', unsafe_allow_html=True)
+                        action = st.selectbox(
+                            "Action",
+                            ["Select Action", "Create SO"],
+                            key=f"action_{idx}",
+                            label_visibility="collapsed",
+                            on_change=lambda idx=idx, row=row, delivery_date=delivery_date: handle_action_change(idx, row, delivery_date)
+                        )
+                        st.markdown('</div>', unsafe_allow_html=True)
             
             else:  # No Sales Order column (5 columns)
                 col1, col2, col3, col4, col5, col6, col7 = st.columns([0.5, 1.2, 1.2, 2, 1, 1.5, 1.5])
@@ -1805,7 +1858,7 @@ def main():
                     part_num = str(row.iloc[2])
                     # Add SS-FV indicator
                     if part_num.startswith("SS-FV"):
-                        st.write(f"🧮 {part_num}")
+                        st.write(f"{part_num}")
                     else:
                         st.write(f"{part_num}")
                 with col5:
@@ -1858,26 +1911,16 @@ def main():
                     if order_number in st.session_state.created_sos:
                         st.markdown(f'<div class="success-action">✅ SO: {st.session_state.created_sos[order_number]}</div>', unsafe_allow_html=True)
                     else:
-                        # Create container with blue background for action elements
-                        action_container = st.container()
-                        with action_container:
-                            st.markdown('<div class="action-column">', unsafe_allow_html=True)
-                            action = st.selectbox(
-                                "Action",
-                                ["Select Action", "Create SO"],
-                                key=f"action_{idx}",
-                                label_visibility="collapsed"
-                            )
-                            if action == "Create SO":
-                                if st.button(f"Execute", key=f"execute_{idx}"):
-                                    # Set up the SO creation panel
-                                    st.session_state.processing_order = {
-                                        'row': row.tolist(),
-                                        'delivery_date': delivery_date,
-                                        'order_number': order_number
-                                    }
-                                    st.rerun()
-                            st.markdown('</div>', unsafe_allow_html=True)
+                        # Fixed action column - only show dropdown, no execute button
+                        st.markdown('<div class="action-column">', unsafe_allow_html=True)
+                        action = st.selectbox(
+                            "Action",
+                            ["Select Action", "Create SO"],
+                            key=f"action_{idx}",
+                            label_visibility="collapsed",
+                            on_change=lambda idx=idx, row=row, delivery_date=delivery_date: handle_action_change(idx, row, delivery_date)
+                        )
+                        st.markdown('</div>', unsafe_allow_html=True)
             
             # Add subtle separator between rows
             if idx < len(st.session_state.orders_data) - 1:
@@ -1885,30 +1928,38 @@ def main():
     
     else:
         # Welcome screen
-        st.markdown(f"# WELCOME **{current_user['first_name'].upper()}**")
+        st.markdown(f"# WELCOME **{st.session_state.current_user['first_name'].upper()}**")
         st.markdown("---")
         
-        # Configuration status
-        col1, col2 = st.columns(2)
-        with col1:
-            api_status = "✅ Connected" if API_TOKEN else "❌ Missing API Token"
-            st.info(f"🔌 **API Status:** {api_status}")
-        
-        with col2:
-            st.info(f"🧮 **SS-FV Calculator:** ✅ Ready")
-        
+
         # Instructions only
         st.info("👆 Use the sidebar to fetch orders and get started!")
         st.markdown("""
         ### How to use:
         1. **Select Order Status** from the dropdown in the sidebar
         2. **Click 'Fetch Orders'** to retrieve orders from Swagelok portal
-        3. **Review orders** in the main table (🧮 icon indicates SS-FV parts)
+        3. **Review orders** in the main table
         4. **Adjust delivery dates** as needed (all dates are editable except "Delivered" orders)
-        5. **Select 'Create SO'** from blue action dropdown and click Execute
+        5. **Select 'Create SO'** from action dropdown
         6. **SS-FV parts** will be automatically calculated (pricing, BOM, operations)
-        7. **Non SS-FV parts** will require manual pricing input
         """)
+
+def handle_action_change(idx, row, delivery_date):
+    """Handle action dropdown change"""
+    action_key = f"action_{idx}"
+    if action_key in st.session_state:
+        action = st.session_state[action_key]
+        if action == "Create SO":
+            # Set up the SO creation panel
+            order_number = str(row.iloc[0])
+            st.session_state.processing_order = {
+                'row': row.tolist(),
+                'delivery_date': delivery_date,
+                'order_number': order_number
+            }
+            # Reset the dropdown
+            st.session_state[action_key] = "Select Action"
+            st.rerun()
 
 if __name__ == "__main__":
     main()
