@@ -902,173 +902,149 @@ def create_sales_order_simple(order_row, delivery_date=None, manual_price=None, 
         traceback.print_exc()
         return None, f"Error creating sales order: {str(e)}"
 
-def show_so_creation_panel():
-    """Show the SO creation panel on the right side"""
+def show_so_creation_modal():
+    """Show SO creation as an overlay modal instead of side panel"""
     if not st.session_state.processing_order:
-        return None
+        return False
     
     order_data = st.session_state.processing_order
     order_number = str(order_data['row'][0])
     part_number = str(order_data['row'][2])
     delivery_date = order_data.get('delivery_date')
     
-    # Create columns to position the form on the right
-    col1, col2 = st.columns([3, 1])
+    # Create a prominent modal-style container
+    st.markdown("---")
+    st.markdown("## 🚀 Creating Sales Order")
     
-    with col2:
-        st.markdown("### Creating Sales Order")
-        st.write(f"**Order:** {order_number}")
-        st.write(f"**Part:** {part_number}")
+    # Create a bordered container for the form
+    with st.container():
+        st.markdown("""
+        <div style="border: 3px solid #4CAF50; border-radius: 10px; padding: 20px; background-color: #f0f8f0; margin: 10px 0;">
+        """, unsafe_allow_html=True)
         
-        # Check if it's an SS-FV part
-        is_ssfv_part = part_number.startswith("SS-FV")
+        col1, col2, col3 = st.columns([1, 2, 1])
         
-        # Auto-process SS-FV parts (only once)
-        if is_ssfv_part and not hasattr(st.session_state, 'ssfv_results'):
-            with st.spinner("Processing SS-FV part..."):
-                success, ssfv_result, error_msg = process_ssfv_part_number(part_number)
-                
-                if success:
-                    price = ssfv_result.get("unit_price", 0.0)
-                    description = ssfv_result.get("description", "")
-                    bom_count = len(ssfv_result.get("bom_items", []))
-                    operations_count = len(ssfv_result.get("production_items", []))
+        with col2:
+            st.markdown(f"### 📋 Order: **{order_number}**")
+            st.markdown(f"### 🔧 Part: **{part_number}**")
+            
+            # Check if it's an SS-FV part
+            is_ssfv_part = part_number.startswith("SS-FV")
+            
+            # Auto-process SS-FV parts (only once)
+            if is_ssfv_part and not hasattr(st.session_state, 'ssfv_results'):
+                with st.spinner("Processing SS-FV part..."):
+                    success, ssfv_result, error_msg = process_ssfv_part_number(part_number)
                     
-                    st.session_state.ssfv_results = {
-                        'success': True,
-                        'price': price or 0.0,
-                        'description': description,
-                        'result': ssfv_result
-                    }
+                    if success:
+                        price = ssfv_result.get("unit_price", 0.0)
+                        st.session_state.ssfv_results = {
+                            'success': True,
+                            'price': price or 0.0,
+                            'result': ssfv_result
+                        }
+                    else:
+                        st.session_state.ssfv_results = {
+                            'success': False,
+                            'error': error_msg
+                        }
+            
+            # Price Input Section
+            st.markdown("#### 💰 Price Input")
+            
+            # Get calculated or default price
+            default_price = 0.0
+            if hasattr(st.session_state, 'ssfv_results'):
+                if st.session_state.ssfv_results.get('success'):
+                    default_price = st.session_state.ssfv_results.get('price', 0.0) or 0.0
+                    if default_price > 0:
+                        st.success(f"✅ SS-FV calculated price: ${default_price:.2f}")
+                    else:
+                        st.warning("⚠️ SS-FV calculation returned $0.00")
                 else:
-                    st.session_state.ssfv_results = {
-                        'success': False,
-                        'error': error_msg
-                    }
-        
-        # Price Input Section - Always show editable field
-        st.markdown("#### Price Input")
-        
-        # Get calculated or default price
-        default_price = 0.0
-        if hasattr(st.session_state, 'ssfv_results'):
-            if st.session_state.ssfv_results.get('success'):
-                default_price = st.session_state.ssfv_results.get('price', 0.0) or 0.0
-                if default_price > 0:
-                    st.success(f"✅ SS-FV calculated price: ${default_price:.2f}")
-                else:
-                    st.warning("⚠️ SS-FV calculation returned $0.00")
+                    st.error(f"❌ SS-FV failed: {st.session_state.ssfv_results.get('error', 'Unknown error')}")
+                    st.warning("⚠️ Please enter price manually")
+            elif is_ssfv_part:
+                st.info("🔄 SS-FV processing not attempted yet")
             else:
-                st.error(f"❌ SS-FV failed: {st.session_state.ssfv_results.get('error', 'Unknown error')}")
-                st.warning("⚠️ Please enter price manually")
-        elif is_ssfv_part:
-            st.info("🔄 SS-FV processing not attempted yet")
-        else:
-            st.info("💰 Manual price required for non-SS-FV parts")
-        
-        # Always show editable price field - this fixes the main issue
-        final_price = st.number_input(
-            "Enter/Edit Price ($)", 
-            min_value=0.0, 
-            value=float(default_price), 
-            step=0.01,
-            key="price_input",
-            help="Price is editable - modify as needed"
-        )
-        
-        # Show processing status if available
-        if hasattr(st.session_state, 'ssfv_results') and st.session_state.ssfv_results.get('success'):
-            result = st.session_state.ssfv_results['result']
-            bom_count = len(result.get("bom_items", []))
-            ops_count = len(result.get("production_items", []))
-            if bom_count > 0 or ops_count > 0:
-                st.info(f"📋 Will add {bom_count} BOM items, {ops_count} operations")
-        
-        # Action buttons
-        col_btn1, col_btn2 = st.columns(2)
-        
-        with col_btn1:
-            if st.button("✅ Create SO", key="create_so_final", disabled=(final_price <= 0)):
-                with st.spinner("Creating Sales Order..."):
+                st.info("💰 Manual price required for non-SS-FV parts")
+            
+            # Price input
+            final_price = st.number_input(
+                "Enter/Edit Price ($)", 
+                min_value=0.0, 
+                value=float(default_price), 
+                step=0.01,
+                key="modal_price_input",
+                help="Price is editable - modify as needed"
+            )
+            
+            # Show processing status if available
+            if hasattr(st.session_state, 'ssfv_results') and st.session_state.ssfv_results.get('success'):
+                result = st.session_state.ssfv_results['result']
+                bom_count = len(result.get("bom_items", []))
+                ops_count = len(result.get("production_items", []))
+                if bom_count > 0 or ops_count > 0:
+                    st.info(f"📋 Will add {bom_count} BOM items, {ops_count} operations")
+            
+            st.markdown("---")
+            
+            # Action buttons
+            col_btn1, col_btn2 = st.columns(2)
+            
+            with col_btn1:
+                if st.button("✅ Create Sales Order", key="modal_create_so", disabled=(final_price <= 0), type="primary"):
                     skip_processing = not is_ssfv_part or not hasattr(st.session_state, 'ssfv_results') or not st.session_state.ssfv_results.get('success')
                     
                     # 🔍 DEBUG: Print before SO creation
-                    print(f"🔍 DEBUG - Before SO creation:")
+                    print(f"🔍 MODAL DEBUG - Before SO creation:")
                     print(f"  Order Number: {order_number}")
                     print(f"  Part Number: {part_number}")
                     print(f"  Final Price: {final_price}")
-                    print(f"  Skip Processing: {skip_processing}")
                     
-                    # 🛡️ CRITICAL: Preserve session state before SO creation
-                    preserved_orders_data = st.session_state.orders_data
-                    preserved_created_sos = st.session_state.created_sos.copy()
-                    preserved_updated_delivery_dates = st.session_state.updated_delivery_dates.copy()
-                    
-                    print(f"🛡️ PRESERVED - orders_data exists: {preserved_orders_data is not None}")
-                    print(f"🛡️ PRESERVED - created_sos: {preserved_created_sos}")
-                    
-                    so_number, result_msg = create_sales_order_simple(
-                        order_data['row'], 
-                        delivery_date, 
-                        final_price, 
-                        skip_processing=skip_processing
-                    )
-                    
-                    # 🔍 DEBUG: Print returned values
-                    print(f"🔍 DEBUG - After SO creation:")
-                    print(f"  Returned SO Number: '{so_number}' (type: {type(so_number)})")
-                    print(f"  Result Message: '{result_msg}'")
-                    print(f"  SO Number is truthy: {bool(so_number)}")
-                    
-                    if so_number:
-                        # 🛡️ CRITICAL: Restore preserved data first
-                        st.session_state.orders_data = preserved_orders_data
-                        st.session_state.created_sos = preserved_created_sos
-                        st.session_state.updated_delivery_dates = preserved_updated_delivery_dates
+                    with st.spinner("Creating Sales Order..."):
+                        so_number, result_msg = create_sales_order_simple(
+                            order_data['row'], 
+                            delivery_date, 
+                            final_price, 
+                            skip_processing=skip_processing
+                        )
                         
-                        # Add the new SO
-                        st.session_state.created_sos[order_number] = so_number
+                        print(f"🔍 MODAL DEBUG - SO creation result: {so_number}, {result_msg}")
                         
-                        # 🔍 DEBUG: Print session state after restore
-                        print(f"🔍 DEBUG - After session state restore:")
-                        print(f"  Orders data exists: {st.session_state.orders_data is not None}")
-                        print(f"  Updated created_sos: {st.session_state.created_sos}")
-                        
-                        st.success(f"🎉 Created SO: {so_number}")
-                        st.balloons()
-                        
-                        # Clear ONLY the processing order - preserve everything else
-                        st.session_state.processing_order = None
-                        if hasattr(st.session_state, 'ssfv_results'):
-                            del st.session_state.ssfv_results
-                        
-                        print(f"🔍 DEBUG - About to call st.rerun()")
-                        st.rerun()
-                    else:
-                        # 🛡️ CRITICAL: Restore preserved data even on failure
-                        st.session_state.orders_data = preserved_orders_data
-                        st.session_state.created_sos = preserved_created_sos
-                        st.session_state.updated_delivery_dates = preserved_updated_delivery_dates
-                        
-                        print(f"🔍 DEBUG - SO creation failed: {result_msg}")
-                        st.error(f"❌ Failed: {result_msg}")
+                        if so_number:
+                            # Store the SO number WITHOUT clearing other session state
+                            if 'created_sos' not in st.session_state:
+                                st.session_state.created_sos = {}
+                            st.session_state.created_sos[order_number] = so_number
+                            
+                            print(f"🔍 MODAL DEBUG - Stored SO: {st.session_state.created_sos}")
+                            
+                            st.success(f"🎉 Successfully Created SO: **{so_number}**")
+                            st.balloons()
+                            
+                            # Clear only the processing order
+                            st.session_state.processing_order = None
+                            if hasattr(st.session_state, 'ssfv_results'):
+                                del st.session_state.ssfv_results
+                            
+                            # Use st.rerun() to refresh the display
+                            st.rerun()
+                        else:
+                            st.error(f"❌ Failed to create SO: {result_msg}")
+            
+            with col_btn2:
+                if st.button("❌ Cancel", key="modal_cancel", type="secondary"):
+                    # Clear only the processing order
+                    st.session_state.processing_order = None
+                    if hasattr(st.session_state, 'ssfv_results'):
+                        del st.session_state.ssfv_results
+                    st.rerun()
         
-        with col_btn2:
-            if st.button("❌ Cancel", key="cancel_so"):
-                # Clear ONLY the processing order - preserve everything else  
-                st.session_state.processing_order = None
-                if hasattr(st.session_state, 'ssfv_results'):
-                    del st.session_state.ssfv_results
-                st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
     
-    # Make sure main content is in col1 to not be pushed down
-    return col1
-
-def close_so_creation_panel():
-    """Close the SO creation panel and clean up"""
-    st.session_state.processing_order = None
-    if hasattr(st.session_state, 'ssfv_results'):
-        del st.session_state.ssfv_results
+    st.markdown("---")
+    return True
 
 # Business Logic Functions (keeping existing ones)
 def business_days_from(start_date, days):
@@ -1709,8 +1685,8 @@ def main():
         change_password_form()
         return
     
-    # Show SO creation panel if active - this returns the main content column
-    main_content_col = show_so_creation_panel()
+    # Show SO creation modal if active
+    modal_active = show_so_creation_modal()
     
     # Sidebar for controls and account
     with st.sidebar:
@@ -1750,9 +1726,11 @@ def main():
         # Clear processing panel if stuck
         if st.session_state.processing_order:
             st.markdown("---")
-            st.warning("⚠️ SO Creation Panel Active")
-            if st.button("🔄 Clear Panel", help="Clear the SO creation panel if stuck"):
-                close_so_creation_panel()
+            st.warning("⚠️ SO Creation Modal Active")
+            if st.button("🔄 Clear Modal", help="Clear the SO creation modal if stuck"):
+                st.session_state.processing_order = None
+                if hasattr(st.session_state, 'ssfv_results'):
+                    del st.session_state.ssfv_results
                 st.rerun()
         
         st.markdown("---")
@@ -1795,37 +1773,24 @@ def main():
             except:
                 st.error("❌ Backup Check Failed")
     
-    # Main content area - use the column from SO panel if active
-    if main_content_col:
-        with main_content_col:
-            # 🔍 DEBUG: Add session state debug info
-            with st.expander("🔍 Debug - Session State", expanded=False):
-                st.write("**Current Session State:**")
-                debug_data = {
-                    "current_user": st.session_state.get('current_user', 'None'),
-                    "orders_data_exists": st.session_state.get('orders_data') is not None,
-                    "orders_data_length": len(st.session_state.orders_data) if st.session_state.get('orders_data') is not None else 0,
-                    "created_sos": st.session_state.get('created_sos', {}),
-                    "processing_order": st.session_state.get('processing_order') is not None,
-                    "all_session_keys": list(st.session_state.keys())
-                }
-                st.json(debug_data)
-            
-            display_main_content()
-    else:
-        # 🔍 DEBUG: Add session state debug info for main area too
-        with st.expander("🔍 Debug - Session State", expanded=False):
-            st.write("**Current Session State:**")
-            debug_data = {
-                "current_user": st.session_state.get('current_user', 'None'),
-                "orders_data_exists": st.session_state.get('orders_data') is not None,
-                "orders_data_length": len(st.session_state.orders_data) if st.session_state.get('orders_data') is not None else 0,
-                "created_sos": st.session_state.get('created_sos', {}),
-                "processing_order": st.session_state.get('processing_order') is not None,
-                "all_session_keys": list(st.session_state.keys())
-            }
-            st.json(debug_data)
-        
+    # Main content area
+    # 🔍 DEBUG: Add session state debug info
+    with st.expander("🔍 Debug - Session State", expanded=False):
+        st.write("**Current Session State:**")
+        debug_data = {
+            "current_user": st.session_state.get('current_user', 'None'),
+            "orders_data_exists": st.session_state.get('orders_data') is not None,
+            "orders_data_length": len(st.session_state.orders_data) if st.session_state.get('orders_data') is not None else 0,
+            "created_sos": st.session_state.get('created_sos', {}),
+            "processing_order": st.session_state.get('processing_order') is not None,
+            "modal_active": modal_active,
+            "all_session_keys": list(st.session_state.keys())
+        }
+        st.json(debug_data)
+    
+    # Show main content (orders table or welcome screen)
+    # Only show if modal is not active to avoid conflicts
+    if not modal_active:
         display_main_content()
 
 def display_main_content():
@@ -1846,7 +1811,10 @@ def display_main_content():
                 print(f"🔍 DEBUG - Back button clicked, clearing orders data")
                 st.session_state.orders_data = None
                 st.session_state.created_sos = {}
-                close_so_creation_panel()  # Also clear SO panel if open
+                # Clear SO modal if open
+                st.session_state.processing_order = None
+                if hasattr(st.session_state, 'ssfv_results'):
+                    del st.session_state.ssfv_results
                 st.rerun()
         
         with col_header2:
