@@ -1882,7 +1882,14 @@ def display_main_content():
         st.markdown(f"# WELCOME **{st.session_state.current_user['first_name'].upper()}**")
         st.markdown("---")
         
-
+        # Configuration status
+        col1, col2 = st.columns(2)
+        with col1:
+            api_status = "✅ Connected" if API_TOKEN else "❌ Missing API Token"
+            st.info(f"🔌 **API Status:** {api_status}")
+        
+        with col2:
+            st.info(f" **SS-FV Calculator:** ✅ Ready")
         
         # Instructions only
         st.info("👆 Use the sidebar to fetch orders and get started!")
@@ -1890,28 +1897,11 @@ def display_main_content():
         ### How to use:
         1. **Select Order Status** from the dropdown in the sidebar
         2. **Click 'Fetch Orders'** to retrieve orders from Swagelok portal
-        3. **Review orders** in the main table ( icon indicates SS-FV parts)
+        3. **Review orders** in the main table 
         4. **Adjust delivery dates** as needed (all dates are editable except "Delivered" orders)
         5. **Select 'Create SO'** from action dropdown
         6. **SS-FV parts** will be automatically calculated (pricing, BOM, operations)
         """)
-
-def handle_action_change(idx, row, delivery_date):
-    """Handle action dropdown change"""
-    action_key = f"action_{idx}"
-    if action_key in st.session_state:
-        action = st.session_state[action_key]
-        if action == "Create SO":
-            # Set up the SO creation panel
-            order_number = str(row.iloc[0])
-            st.session_state.processing_order = {
-                'row': row.tolist(),
-                'delivery_date': delivery_date,
-                'order_number': order_number
-            }
-            # Reset the dropdown
-            st.session_state[action_key] = "Select Action"
-            st.rerun()
 
 if __name__ == "__main__":
     main()
