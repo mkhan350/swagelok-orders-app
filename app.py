@@ -1748,7 +1748,7 @@ def display_main_content():
                     part_num = str(row.iloc[2])
                     # Add SS-FV indicator
                     if part_num.startswith("SS-FV"):
-                        st.write(f"{part_num}")
+                        st.write(f" {part_num}")
                     else:
                         st.write(f"{part_num}")
                 with col5:
@@ -1808,7 +1808,7 @@ def display_main_content():
                     part_num = str(row.iloc[2])
                     # Add SS-FV indicator
                     if part_num.startswith("SS-FV"):
-                        st.write(f"{part_num}")
+                        st.write(f" {part_num}")
                     else:
                         st.write(f"{part_num}")
                 with col5:
@@ -1878,15 +1878,15 @@ def display_main_content():
         # Welcome screen
         st.markdown(f"# WELCOME **{st.session_state.current_user['first_name'].upper()}**")
         st.markdown("---")
-
         
+      
         # Instructions only
         st.info("👆 Use the sidebar to fetch orders and get started!")
         st.markdown("""
         ### How to use:
         1. **Select Order Status** from the dropdown in the sidebar
         2. **Click 'Fetch Orders'** to retrieve orders from Swagelok portal
-        3. **Review orders** in the main table 
+        3. **Review orders** in the main table
         4. **Adjust delivery dates** as needed (all dates are editable except "Delivered" orders)
         5. **Select 'Create SO'** from action dropdown
         6. **SS-FV parts** will be automatically calculated (pricing, BOM, operations)
