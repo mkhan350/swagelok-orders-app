@@ -380,6 +380,17 @@ if 'current_user' not in st.session_state:
 if 'processing_order' not in st.session_state:
     st.session_state.processing_order = None
 
+# 🛡️ CRITICAL SESSION STATE PROTECTION
+def protect_session_state():
+    """Ensure critical session state keys are never accidentally None when they should exist"""
+    if 'created_sos' not in st.session_state or st.session_state.created_sos is None:
+        st.session_state.created_sos = {}
+    if 'updated_delivery_dates' not in st.session_state or st.session_state.updated_delivery_dates is None:
+        st.session_state.updated_delivery_dates = {}
+
+# Call protection on every app run
+protect_session_state()
+
 # ====== ENHANCED API CLIENT WITH SS-FV INTEGRATION ======
 class OptimizedFulcrumAPI:
     """Enhanced API client with BOM, operations, and SS-FV calculator integration"""
@@ -988,6 +999,14 @@ def show_so_creation_panel():
                     print(f"  Final Price: {final_price}")
                     print(f"  Skip Processing: {skip_processing}")
                     
+                    # 🛡️ CRITICAL: Preserve session state before SO creation
+                    preserved_orders_data = st.session_state.orders_data
+                    preserved_created_sos = st.session_state.created_sos.copy()
+                    preserved_updated_delivery_dates = st.session_state.updated_delivery_dates.copy()
+                    
+                    print(f"🛡️ PRESERVED - orders_data exists: {preserved_orders_data is not None}")
+                    print(f"🛡️ PRESERVED - created_sos: {preserved_created_sos}")
+                    
                     so_number, result_msg = create_sales_order_simple(
                         order_data['row'], 
                         delivery_date, 
@@ -1002,33 +1021,44 @@ def show_so_creation_panel():
                     print(f"  SO Number is truthy: {bool(so_number)}")
                     
                     if so_number:
-                        # 🔍 DEBUG: Print session state before update
-                        print(f"🔍 DEBUG - Before session state update:")
-                        print(f"  Current created_sos: {st.session_state.created_sos}")
-                        print(f"  Orders data exists: {st.session_state.orders_data is not None}")
+                        # 🛡️ CRITICAL: Restore preserved data first
+                        st.session_state.orders_data = preserved_orders_data
+                        st.session_state.created_sos = preserved_created_sos
+                        st.session_state.updated_delivery_dates = preserved_updated_delivery_dates
                         
-                        # Store the SO number
+                        # Add the new SO
                         st.session_state.created_sos[order_number] = so_number
                         
-                        # 🔍 DEBUG: Print session state after update
-                        print(f"🔍 DEBUG - After session state update:")
+                        # 🔍 DEBUG: Print session state after restore
+                        print(f"🔍 DEBUG - After session state restore:")
+                        print(f"  Orders data exists: {st.session_state.orders_data is not None}")
                         print(f"  Updated created_sos: {st.session_state.created_sos}")
                         
                         st.success(f"🎉 Created SO: {so_number}")
                         st.balloons()
                         
-                        # Clear the processing order and results - DO NOT clear orders_data
-                        close_so_creation_panel()
+                        # Clear ONLY the processing order - preserve everything else
+                        st.session_state.processing_order = None
+                        if hasattr(st.session_state, 'ssfv_results'):
+                            del st.session_state.ssfv_results
                         
                         print(f"🔍 DEBUG - About to call st.rerun()")
                         st.rerun()
                     else:
+                        # 🛡️ CRITICAL: Restore preserved data even on failure
+                        st.session_state.orders_data = preserved_orders_data
+                        st.session_state.created_sos = preserved_created_sos
+                        st.session_state.updated_delivery_dates = preserved_updated_delivery_dates
+                        
                         print(f"🔍 DEBUG - SO creation failed: {result_msg}")
                         st.error(f"❌ Failed: {result_msg}")
         
         with col_btn2:
             if st.button("❌ Cancel", key="cancel_so"):
-                close_so_creation_panel()
+                # Clear ONLY the processing order - preserve everything else  
+                st.session_state.processing_order = None
+                if hasattr(st.session_state, 'ssfv_results'):
+                    del st.session_state.ssfv_results
                 st.rerun()
     
     # Make sure main content is in col1 to not be pushed down
