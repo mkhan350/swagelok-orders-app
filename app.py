@@ -964,7 +964,7 @@ def show_so_creation_panel():
                         st.session_state.created_sos[order_number] = so_number
                         st.success(f"🎉 Created SO: {so_number}")
                         st.balloons()
-                        # Clear the processing order and results
+                        # Clear the processing order and results - DO NOT clear orders_data
                         close_so_creation_panel()
                         st.rerun()
                     else:
@@ -1548,15 +1548,14 @@ def login_form():
                 success, result = user_db.authenticate_user(username, password)
                 
                 if success:
-                    # Clear all session state for fresh login
-                    for key in list(st.session_state.keys()):
-                        if key not in ['current_user']:
+                    # Clear some session state for fresh login, but keep orders data
+                    keys_to_clear = ['show_create_user', 'show_change_password', 'show_view_users', 'processing_order']
+                    for key in keys_to_clear:
+                        if key in st.session_state:
                             del st.session_state[key]
                     
                     st.session_state.current_user = result
-                    st.session_state.orders_data = None
-                    st.session_state.created_sos = {}
-                    st.session_state.updated_delivery_dates = {}
+                    # Don't clear orders_data or created_sos on login
                     st.rerun()
                 else:
                     st.error(f"❌ {result}")
@@ -1566,8 +1565,9 @@ def login_form():
 
 def logout():
     """Logout function"""
-    st.session_state.current_user = None
-    st.session_state.orders_data = None
+    # Clear all session state on logout
+    for key in list(st.session_state.keys()):
+        del st.session_state[key]
     st.rerun()
 
 # Initialize API client and SS-FV calculator
@@ -1620,7 +1620,7 @@ def main():
             ]
         )
         
-        # Clear old data when order status changes
+        # Clear old data when order status changes (this makes sense to keep)
         if st.session_state.get('last_order_status') != order_status:
             st.session_state.orders_data = None
             st.session_state.created_sos = {}
@@ -1697,8 +1697,20 @@ def main():
 def display_main_content():
     """Display the main content (orders table or welcome screen)"""
     if st.session_state.orders_data is not None:
-        # Orders fetched - show orders table with proper headers
-        st.header("Open Orders")
+        # Orders fetched - show orders table with BACK button
+        col_header1, col_header2 = st.columns([1, 6])
+        
+        with col_header1:
+            # BACK TO WELCOME button - only clears orders when explicitly clicked
+            if st.button("← Back to Welcome", type="secondary"):
+                st.session_state.orders_data = None
+                st.session_state.created_sos = {}
+                close_so_creation_panel()  # Also clear SO panel if open
+                st.rerun()
+        
+        with col_header2:
+            st.header("Open Orders")
+        
         st.write(f"**Found {len(st.session_state.orders_data)} orders:**")
         st.info("💡 **Tip:** All delivery dates are editable - adjust them as needed before creating Sales Orders!")
         
@@ -1735,7 +1747,7 @@ def display_main_content():
                     part_num = str(row.iloc[2])
                     # Add SS-FV indicator
                     if part_num.startswith("SS-FV"):
-                        st.write(f" {part_num}")
+                        st.write(f"🧮 {part_num}")
                     else:
                         st.write(f"{part_num}")
                 with col5:
@@ -1773,7 +1785,6 @@ def display_main_content():
                     if order_number in st.session_state.created_sos:
                         st.markdown(f'<div class="success-action">✅ SO: {st.session_state.created_sos[order_number]}</div>', unsafe_allow_html=True)
                     else:
-                        # Fixed action column - only show dropdown, no wrapper div
                         action = st.selectbox(
                             "Action",
                             ["Select Action", "Create SO"],
@@ -1803,7 +1814,7 @@ def display_main_content():
                     part_num = str(row.iloc[2])
                     # Add SS-FV indicator
                     if part_num.startswith("SS-FV"):
-                        st.write(f" {part_num}")
+                        st.write(f"🧮 {part_num}")
                     else:
                         st.write(f"{part_num}")
                 with col5:
@@ -1856,7 +1867,6 @@ def display_main_content():
                     if order_number in st.session_state.created_sos:
                         st.markdown(f'<div class="success-action">✅ SO: {st.session_state.created_sos[order_number]}</div>', unsafe_allow_html=True)
                     else:
-                        # Fixed action column - only show dropdown, no wrapper div
                         action = st.selectbox(
                             "Action",
                             ["Select Action", "Create SO"],
@@ -1889,7 +1899,7 @@ def display_main_content():
             st.info(f"🔌 **API Status:** {api_status}")
         
         with col2:
-            st.info(f" **SS-FV Calculator:** ✅ Ready")
+            st.info(f"🧮 **SS-FV Calculator:** ✅ Ready")
         
         # Instructions only
         st.info("👆 Use the sidebar to fetch orders and get started!")
@@ -1897,10 +1907,12 @@ def display_main_content():
         ### How to use:
         1. **Select Order Status** from the dropdown in the sidebar
         2. **Click 'Fetch Orders'** to retrieve orders from Swagelok portal
-        3. **Review orders** in the main table 
+        3. **Review orders** in the main table (🧮 icon indicates SS-FV parts)
         4. **Adjust delivery dates** as needed (all dates are editable except "Delivered" orders)
         5. **Select 'Create SO'** from action dropdown
         6. **SS-FV parts** will be automatically calculated (pricing, BOM, operations)
+        7. **Non SS-FV parts** will require manual pricing input
+        8. **Click "← Back to Welcome"** to return to this screen when finished
         """)
 
 if __name__ == "__main__":
