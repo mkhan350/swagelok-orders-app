@@ -15,8 +15,7 @@ import io
 import sqlite3
 import hashlib
 import os
-import openpyxl
-from openpyxl import load_workbook
+
 import traceback
 
 # Page setup
