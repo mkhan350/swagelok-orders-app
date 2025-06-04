@@ -368,7 +368,7 @@ class UserDatabase:
 def get_user_db():
     return UserDatabase()
 
-# Initialize session state
+# Initialize session state with defensive checks
 if 'orders_data' not in st.session_state:
     st.session_state.orders_data = None
 if 'created_sos' not in st.session_state:
@@ -792,6 +792,15 @@ def create_sales_order_simple(order_row, delivery_date=None, manual_price=None, 
         part_number = str(order_row[2]).strip()
         quantity = int(order_row[3])
         
+        # 🔍 DEBUG: Print input parameters
+        print(f"🔍 DEBUG - create_sales_order_simple inputs:")
+        print(f"  order_number: {order_number}")
+        print(f"  order_date: {order_date}")
+        print(f"  part_number: {part_number}")
+        print(f"  quantity: {quantity}")
+        print(f"  manual_price: {manual_price}")
+        print(f"  skip_processing: {skip_processing}")
+        
         # Handle delivery date
         if delivery_date:
             due_date_final = format_delivery_date(delivery_date)
@@ -821,13 +830,21 @@ def create_sales_order_simple(order_row, delivery_date=None, manual_price=None, 
             "dueDate": due_date_final,
         }
         
+        print(f"🔍 DEBUG - Creating sales order with payload: {payload}")
+        
         sales_order_id = api_client.create_sales_order(payload)
+        print(f"🔍 DEBUG - Sales order created with ID: {sales_order_id}")
+        
         if not sales_order_id:
+            print(f"🔍 DEBUG - Failed to create sales order")
             return None, "Failed to create Sales Order"
         
         # Get sales order details to get the SO number
         so_details = api_client.get_sales_order_details(sales_order_id)
+        print(f"🔍 DEBUG - Sales order details: {so_details}")
+        
         sales_order_number = so_details.get("number") if so_details else "Unknown"
+        print(f"🔍 DEBUG - Sales order number: {sales_order_number}")
         
         # Step 2: Process part
         if skip_processing:
@@ -842,9 +859,11 @@ def create_sales_order_simple(order_row, delivery_date=None, manual_price=None, 
                 item_id = api_client.create_item(part_number, f"Swagelok Part {part_number}")
             
             price = manual_price
+            print(f"🔍 DEBUG - Skip processing: item_id={item_id}, price={price}")
         else:
             # Full SS-FV processing
             item_id, price, success, error_msg, bom_items, operations = process_part_number_with_ssfv(part_number, manual_price)
+            print(f"🔍 DEBUG - Full processing: item_id={item_id}, price={price}, success={success}")
             if not success:
                 return None, error_msg
             if price is None:
@@ -852,15 +871,24 @@ def create_sales_order_simple(order_row, delivery_date=None, manual_price=None, 
         
         # Step 3: Add line item
         if item_id and price is not None:
+            print(f"🔍 DEBUG - Adding line item: item_id={item_id}, quantity={quantity}, price={price}")
             success = api_client.add_part_line_item(sales_order_id, item_id, quantity, price)
+            print(f"🔍 DEBUG - Line item added successfully: {success}")
+            
             if success:
+                print(f"🔍 DEBUG - Returning success: SO number = {sales_order_number}")
                 return sales_order_number, "Success"
             else:
+                print(f"🔍 DEBUG - Failed to add line item")
                 return None, "Failed to add line item to Sales Order"
         else:
+            print(f"🔍 DEBUG - Missing item_id or price: item_id={item_id}, price={price}")
             return None, "Failed to process part for Sales Order"
                 
     except Exception as e:
+        print(f"🔍 DEBUG - Exception in create_sales_order_simple: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return None, f"Error creating sales order: {str(e)}"
 
 def show_so_creation_panel():
@@ -953,6 +981,13 @@ def show_so_creation_panel():
                 with st.spinner("Creating Sales Order..."):
                     skip_processing = not is_ssfv_part or not hasattr(st.session_state, 'ssfv_results') or not st.session_state.ssfv_results.get('success')
                     
+                    # 🔍 DEBUG: Print before SO creation
+                    print(f"🔍 DEBUG - Before SO creation:")
+                    print(f"  Order Number: {order_number}")
+                    print(f"  Part Number: {part_number}")
+                    print(f"  Final Price: {final_price}")
+                    print(f"  Skip Processing: {skip_processing}")
+                    
                     so_number, result_msg = create_sales_order_simple(
                         order_data['row'], 
                         delivery_date, 
@@ -960,14 +995,35 @@ def show_so_creation_panel():
                         skip_processing=skip_processing
                     )
                     
+                    # 🔍 DEBUG: Print returned values
+                    print(f"🔍 DEBUG - After SO creation:")
+                    print(f"  Returned SO Number: '{so_number}' (type: {type(so_number)})")
+                    print(f"  Result Message: '{result_msg}'")
+                    print(f"  SO Number is truthy: {bool(so_number)}")
+                    
                     if so_number:
+                        # 🔍 DEBUG: Print session state before update
+                        print(f"🔍 DEBUG - Before session state update:")
+                        print(f"  Current created_sos: {st.session_state.created_sos}")
+                        print(f"  Orders data exists: {st.session_state.orders_data is not None}")
+                        
+                        # Store the SO number
                         st.session_state.created_sos[order_number] = so_number
+                        
+                        # 🔍 DEBUG: Print session state after update
+                        print(f"🔍 DEBUG - After session state update:")
+                        print(f"  Updated created_sos: {st.session_state.created_sos}")
+                        
                         st.success(f"🎉 Created SO: {so_number}")
                         st.balloons()
+                        
                         # Clear the processing order and results - DO NOT clear orders_data
                         close_so_creation_panel()
+                        
+                        print(f"🔍 DEBUG - About to call st.rerun()")
                         st.rerun()
                     else:
+                        print(f"🔍 DEBUG - SO creation failed: {result_msg}")
                         st.error(f"❌ Failed: {result_msg}")
         
         with col_btn2:
@@ -1548,14 +1604,36 @@ def login_form():
                 success, result = user_db.authenticate_user(username, password)
                 
                 if success:
-                    # Clear some session state for fresh login, but keep orders data
-                    keys_to_clear = ['show_create_user', 'show_change_password', 'show_view_users', 'processing_order']
+                    # 🔍 DEBUG: Print session state before login cleanup
+                    print(f"🔍 DEBUG - Before login cleanup:")
+                    print(f"  orders_data exists: {st.session_state.get('orders_data') is not None}")
+                    print(f"  created_sos: {st.session_state.get('created_sos', {})}")
+                    
+                    # SAFE login session reset - preserve critical data
+                    keys_to_preserve = ['orders_data', 'created_sos', 'updated_delivery_dates']
+                    preserved_data = {}
+                    
+                    # Save important data before clearing
+                    for key in keys_to_preserve:
+                        if key in st.session_state:
+                            preserved_data[key] = st.session_state[key]
+                    
+                    # Clear only management form flags and processing state
+                    keys_to_clear = ['show_create_user', 'show_change_password', 'show_view_users', 'processing_order', 'ssfv_results']
                     for key in keys_to_clear:
                         if key in st.session_state:
                             del st.session_state[key]
                     
+                    # Set user and restore preserved data
                     st.session_state.current_user = result
-                    # Don't clear orders_data or created_sos on login
+                    for key, value in preserved_data.items():
+                        st.session_state[key] = value
+                    
+                    # 🔍 DEBUG: Print session state after login cleanup
+                    print(f"🔍 DEBUG - After login cleanup:")
+                    print(f"  orders_data exists: {st.session_state.get('orders_data') is not None}")
+                    print(f"  created_sos: {st.session_state.get('created_sos', {})}")
+                    
                     st.rerun()
                 else:
                     st.error(f"❌ {result}")
@@ -1690,12 +1768,44 @@ def main():
     # Main content area - use the column from SO panel if active
     if main_content_col:
         with main_content_col:
+            # 🔍 DEBUG: Add session state debug info
+            with st.expander("🔍 Debug - Session State", expanded=False):
+                st.write("**Current Session State:**")
+                debug_data = {
+                    "current_user": st.session_state.get('current_user', 'None'),
+                    "orders_data_exists": st.session_state.get('orders_data') is not None,
+                    "orders_data_length": len(st.session_state.orders_data) if st.session_state.get('orders_data') is not None else 0,
+                    "created_sos": st.session_state.get('created_sos', {}),
+                    "processing_order": st.session_state.get('processing_order') is not None,
+                    "all_session_keys": list(st.session_state.keys())
+                }
+                st.json(debug_data)
+            
             display_main_content()
     else:
+        # 🔍 DEBUG: Add session state debug info for main area too
+        with st.expander("🔍 Debug - Session State", expanded=False):
+            st.write("**Current Session State:**")
+            debug_data = {
+                "current_user": st.session_state.get('current_user', 'None'),
+                "orders_data_exists": st.session_state.get('orders_data') is not None,
+                "orders_data_length": len(st.session_state.orders_data) if st.session_state.get('orders_data') is not None else 0,
+                "created_sos": st.session_state.get('created_sos', {}),
+                "processing_order": st.session_state.get('processing_order') is not None,
+                "all_session_keys": list(st.session_state.keys())
+            }
+            st.json(debug_data)
+        
         display_main_content()
 
 def display_main_content():
     """Display the main content (orders table or welcome screen)"""
+    # 🔍 DEFENSIVE: Ensure session state keys exist
+    if 'orders_data' not in st.session_state:
+        st.session_state.orders_data = None
+    if 'created_sos' not in st.session_state:
+        st.session_state.created_sos = {}
+    
     if st.session_state.orders_data is not None:
         # Orders fetched - show orders table with BACK button
         col_header1, col_header2 = st.columns([1, 6])
@@ -1703,6 +1813,7 @@ def display_main_content():
         with col_header1:
             # BACK TO WELCOME button - only clears orders when explicitly clicked
             if st.button("← Back to Welcome", type="secondary"):
+                print(f"🔍 DEBUG - Back button clicked, clearing orders data")
                 st.session_state.orders_data = None
                 st.session_state.created_sos = {}
                 close_so_creation_panel()  # Also clear SO panel if open
@@ -1783,7 +1894,9 @@ def display_main_content():
                 with col8:
                     order_number = str(row.iloc[0])
                     if order_number in st.session_state.created_sos:
-                        st.markdown(f'<div class="success-action">✅ SO: {st.session_state.created_sos[order_number]}</div>', unsafe_allow_html=True)
+                        so_number = st.session_state.created_sos[order_number]
+                        print(f"🔍 DEBUG - Displaying success for order {order_number}: SO {so_number}")
+                        st.markdown(f'<div class="success-action">✅ SO: {so_number}</div>', unsafe_allow_html=True)
                     else:
                         action = st.selectbox(
                             "Action",
@@ -1865,7 +1978,9 @@ def display_main_content():
                 with col7:
                     order_number = str(row.iloc[0])
                     if order_number in st.session_state.created_sos:
-                        st.markdown(f'<div class="success-action">✅ SO: {st.session_state.created_sos[order_number]}</div>', unsafe_allow_html=True)
+                        so_number = st.session_state.created_sos[order_number]
+                        print(f"🔍 DEBUG - Displaying success for order {order_number}: SO {so_number}")
+                        st.markdown(f'<div class="success-action">✅ SO: {so_number}</div>', unsafe_allow_html=True)
                     else:
                         action = st.selectbox(
                             "Action",
