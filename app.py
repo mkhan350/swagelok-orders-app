@@ -962,8 +962,8 @@ def show_so_creation_panel():
                     
                     if so_number:
                         st.session_state.created_sos[order_number] = so_number
-                        # Store success message for display after rerun
-                        st.session_state.so_success_message = f"🎉 Successfully created Sales Order: {so_number} for Order: {order_number}"
+                        st.success(f"🎉 Created SO: {so_number}")
+                        st.balloons()
                         # Clear the processing order and results
                         close_so_creation_panel()
                         st.rerun()
@@ -1625,9 +1625,6 @@ def main():
             st.session_state.orders_data = None
             st.session_state.created_sos = {}
             st.session_state.last_order_status = order_status
-            # Clear any pending success messages when changing order status
-            if hasattr(st.session_state, 'so_success_message'):
-                del st.session_state.so_success_message
         
         # Fetch orders button
         if st.button("Fetch Orders", type="primary"):
@@ -1636,9 +1633,6 @@ def main():
                     headers, data = fetch_swagelok_orders(order_status)
                     if data:
                         st.session_state.orders_data = pd.DataFrame(data, columns=headers)
-                        # Clear any pending success messages when fetching new orders
-                        if hasattr(st.session_state, 'so_success_message'):
-                            del st.session_state.so_success_message
                         st.success(f"✅ Fetched {len(data)} orders successfully!")
                     else:
                         st.error("❌ No orders found or connection failed")
@@ -1705,13 +1699,6 @@ def display_main_content():
     if st.session_state.orders_data is not None:
         # Orders fetched - show orders table with proper headers
         st.header("Open Orders")
-        
-        # Display success message if SO was just created
-        if hasattr(st.session_state, 'so_success_message'):
-            st.success(st.session_state.so_success_message)
-            # Clear the message after displaying it
-            del st.session_state.so_success_message
-        
         st.write(f"**Found {len(st.session_state.orders_data)} orders:**")
         st.info("💡 **Tip:** All delivery dates are editable - adjust them as needed before creating Sales Orders!")
         
@@ -1791,9 +1778,17 @@ def display_main_content():
                             "Action",
                             ["Select Action", "Create SO"],
                             key=f"action_{idx}",
-                            label_visibility="collapsed",
-                            on_change=lambda idx=idx, row=row, delivery_date=delivery_date: handle_action_change(idx, row, delivery_date)
+                            label_visibility="collapsed"
                         )
+                        if action == "Create SO":
+                            if st.button(f"Execute", key=f"execute_{idx}"):
+                                # Set up the SO creation panel
+                                st.session_state.processing_order = {
+                                    'row': row.tolist(),
+                                    'delivery_date': delivery_date if delivery_date is not None else str(row.iloc[5]),
+                                    'order_number': order_number
+                                }
+                                st.rerun()
             
             else:  # No Sales Order column (5 columns)
                 col1, col2, col3, col4, col5, col6, col7 = st.columns([0.5, 1.2, 1.2, 2, 1, 1.5, 1.5])
@@ -1866,9 +1861,17 @@ def display_main_content():
                             "Action",
                             ["Select Action", "Create SO"],
                             key=f"action_{idx}",
-                            label_visibility="collapsed",
-                            on_change=lambda idx=idx, row=row, delivery_date=delivery_date: handle_action_change(idx, row, delivery_date)
+                            label_visibility="collapsed"
                         )
+                        if action == "Create SO":
+                            if st.button(f"Execute", key=f"execute_{idx}"):
+                                # Set up the SO creation panel
+                                st.session_state.processing_order = {
+                                    'row': row.tolist(),
+                                    'delivery_date': delivery_date,
+                                    'order_number': order_number
+                                }
+                                st.rerun()
             
             # Add subtle separator between rows
             if idx < len(st.session_state.orders_data) - 1:
@@ -1879,14 +1882,15 @@ def display_main_content():
         st.markdown(f"# WELCOME **{st.session_state.current_user['first_name'].upper()}**")
         st.markdown("---")
         
-      
+
+        
         # Instructions only
         st.info("👆 Use the sidebar to fetch orders and get started!")
         st.markdown("""
         ### How to use:
         1. **Select Order Status** from the dropdown in the sidebar
         2. **Click 'Fetch Orders'** to retrieve orders from Swagelok portal
-        3. **Review orders** in the main table
+        3. **Review orders** in the main table ( icon indicates SS-FV parts)
         4. **Adjust delivery dates** as needed (all dates are editable except "Delivered" orders)
         5. **Select 'Create SO'** from action dropdown
         6. **SS-FV parts** will be automatically calculated (pricing, BOM, operations)
