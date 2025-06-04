@@ -864,7 +864,7 @@ def create_sales_order_simple(order_row, delivery_date=None, manual_price=None, 
         return None, f"Error creating sales order: {str(e)}"
 
 def show_so_creation_panel():
-    """Show the SO creation panel as a floating div on the right side"""
+    """Show the SO creation panel on the right side"""
     if not st.session_state.processing_order:
         return None
     
@@ -873,20 +873,7 @@ def show_so_creation_panel():
     part_number = str(order_data['row'][2])
     delivery_date = order_data.get('delivery_date')
     
-    # Create a container for the floating panel
-    panel_html = f"""
-    <div class="so-panel">
-        <h3>🔧 Creating Sales Order</h3>
-        <p><strong>Order:</strong> {order_number}</p>
-        <p><strong>Part:</strong> {part_number}</p>
-        <p><strong>Delivery:</strong> {delivery_date if delivery_date else 'TBD'}</p>
-    </div>
-    """
-    
-    # Display the floating panel HTML
-    st.markdown(panel_html, unsafe_allow_html=True)
-    
-    # Create columns to position the actual form on the right
+    # Create columns to position the form on the right
     col1, col2 = st.columns([3, 1])
     
     with col2:
@@ -975,7 +962,8 @@ def show_so_creation_panel():
                     
                     if so_number:
                         st.session_state.created_sos[order_number] = so_number
-                        st.success(f"🎉 Created SO: {so_number}")
+                        # Store success message for display after rerun
+                        st.session_state.so_success_message = f"🎉 Successfully created Sales Order: {so_number} for Order: {order_number}"
                         # Clear the processing order and results
                         close_so_creation_panel()
                         st.rerun()
@@ -1637,6 +1625,9 @@ def main():
             st.session_state.orders_data = None
             st.session_state.created_sos = {}
             st.session_state.last_order_status = order_status
+            # Clear any pending success messages when changing order status
+            if hasattr(st.session_state, 'so_success_message'):
+                del st.session_state.so_success_message
         
         # Fetch orders button
         if st.button("Fetch Orders", type="primary"):
@@ -1645,6 +1636,9 @@ def main():
                     headers, data = fetch_swagelok_orders(order_status)
                     if data:
                         st.session_state.orders_data = pd.DataFrame(data, columns=headers)
+                        # Clear any pending success messages when fetching new orders
+                        if hasattr(st.session_state, 'so_success_message'):
+                            del st.session_state.so_success_message
                         st.success(f"✅ Fetched {len(data)} orders successfully!")
                     else:
                         st.error("❌ No orders found or connection failed")
@@ -1711,6 +1705,13 @@ def display_main_content():
     if st.session_state.orders_data is not None:
         # Orders fetched - show orders table with proper headers
         st.header("Open Orders")
+        
+        # Display success message if SO was just created
+        if hasattr(st.session_state, 'so_success_message'):
+            st.success(st.session_state.so_success_message)
+            # Clear the message after displaying it
+            del st.session_state.so_success_message
+        
         st.write(f"**Found {len(st.session_state.orders_data)} orders:**")
         st.info("💡 **Tip:** All delivery dates are editable - adjust them as needed before creating Sales Orders!")
         
@@ -1747,7 +1748,7 @@ def display_main_content():
                     part_num = str(row.iloc[2])
                     # Add SS-FV indicator
                     if part_num.startswith("SS-FV"):
-                        st.write(f" {part_num}")
+                        st.write(f"{part_num}")
                     else:
                         st.write(f"{part_num}")
                 with col5:
@@ -1807,7 +1808,7 @@ def display_main_content():
                     part_num = str(row.iloc[2])
                     # Add SS-FV indicator
                     if part_num.startswith("SS-FV"):
-                        st.write(f" {part_num}")
+                        st.write(f"{part_num}")
                     else:
                         st.write(f"{part_num}")
                 with col5:
@@ -1877,6 +1878,7 @@ def display_main_content():
         # Welcome screen
         st.markdown(f"# WELCOME **{st.session_state.current_user['first_name'].upper()}**")
         st.markdown("---")
+
         
         # Instructions only
         st.info("👆 Use the sidebar to fetch orders and get started!")
